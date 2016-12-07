@@ -21,6 +21,7 @@ import chpl_tasks
 import chpl_timers
 import chpl_unwind
 import chpl_lib_pic
+import chpl_tuner
 # third-party package configuration helpers
 import chpl_3p_gmp_configs
 import chpl_3p_hwloc_configs

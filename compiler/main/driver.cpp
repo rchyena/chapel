@@ -91,6 +91,7 @@ const char* CHPL_LLVM = NULL;
 const char* CHPL_AUX_FILESYS = NULL;
 const char* CHPL_UNWIND = NULL;
 const char* CHPL_LIB_PIC = NULL;
+const char* CHPL_TUNER = NULL;
 
 const char* CHPL_RUNTIME_SUBDIR = NULL;
 const char* CHPL_LAUNCHER_SUBDIR = NULL;
@@ -1283,6 +1284,7 @@ static void setChapelEnvs() {
   CHPL_AUX_FILESYS     = envMap["CHPL_AUX_FILESYS"];
   CHPL_UNWIND          = envMap["CHPL_UNWIND"];
   CHPL_LIB_PIC         = envMap["CHPL_LIB_PIC"];
+  CHPL_TUNER           = envMap["CHPL_TUNER"];
 
   CHPL_RUNTIME_SUBDIR  = envMap["CHPL_RUNTIME_SUBDIR"];
   CHPL_LAUNCHER_SUBDIR = envMap["CHPL_LAUNCHER_SUBDIR"];
