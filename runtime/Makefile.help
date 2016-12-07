@@ -61,7 +61,7 @@ include src/launch/$(CHPL_MAKE_LAUNCHER)/Makefile.include
 include src/mem/$(CHPL_MAKE_MEM)/Makefile.include
 include src/topo/$(CHPL_MAKE_TOPO)/Makefile.include
 include src/qio/Makefile.include
-
+include src/tuners/$(CHPL_MAKE_TUNER)/Makefile.include
 
 #
 # subdirectories and false subdirectory-oriented targets to force recursion
