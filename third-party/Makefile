@@ -16,7 +16,7 @@ endif
 
 default: all
 
-all: test-venv chpldoc-venv gasnet gmp hwloc jemalloc libunwind qthread llvm
+all: test-venv chpldoc-venv gasnet gmp hwloc jemalloc libunwind qthread llvm activeharmony
 
 clean: FORCE
 	cd chpl-venv && $(MAKE) clean
@@ -29,6 +29,7 @@ clean: FORCE
 	cd qthread && $(MAKE) clean
 	cd re2 && $(MAKE) clean
 	cd fltk && $(MAKE) clean
+	cd activeharmony && $(MAKE) clean
 
 cleanall: FORCE
 	cd chpl-venv && $(MAKE) cleanall
@@ -41,6 +42,7 @@ cleanall: FORCE
 	cd qthread && $(MAKE) cleanall
 	cd re2 && $(MAKE) cleanall
 	cd fltk && $(MAKE) cleanall
+	cd activeharmony && $(MAKE) cleanall
 
 clobber: FORCE
 	cd chpl-venv && $(MAKE) clobber
@@ -53,6 +55,7 @@ clobber: FORCE
 	cd qthread && $(MAKE) clobber
 	cd re2 && $(MAKE) clobber
 	cd fltk && $(MAKE) clobber
+	cd activeharmony && $(MAKE) clobber
 
 depend:
 
@@ -152,6 +155,11 @@ re2: $(RE2_H_FILE)
 $(RE2_H_FILE): $(RE2_DEPEND)
 	rm -rf $(RE2_INSTALL_DIR) && rm -rf $(RE2_BUILD_DIR)
 	cd re2 && $(MAKE)
+
+activeharmony: $(ACTIVEHARMONY_INSTALL_DIR)
+$(ACTIVEHARMONY_INSTALL_DIR):
+	cd activeharmony && $(MAKE)
+$(ACTIVEHARMONY_ALIASES): activeharmony
 
 -include Makefile.devel
 
