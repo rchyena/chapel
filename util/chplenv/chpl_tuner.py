@@ -4,7 +4,7 @@ import overrides
 from sys import stdout, stderr
 from utils import error, memoize
 
-valid_tuners = set(['none'])
+valid_tuners = set(['none', 'harmony'])
 
 @memoize
 def get():

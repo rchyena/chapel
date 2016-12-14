@@ -26,7 +26,7 @@ module Tuner {
   config var tuningEnabled: bool = true;
 
   // Module-level global variables.
-  var globalTask: TuningTask;
+  var globalTask: unmanaged TuningTask;
 
   // Module-level initialization.
   if (CHPL_TUNER == "none")
@@ -36,14 +36,16 @@ module Tuner {
 
   if (tuningEnabled) {
     if (chpl_tuner_init())
-      then globalTask = new TuningTask();
+      then globalTask = new unmanaged TuningTask();
       else tuningEnabled = false;
   }
+
+  
 
   // Chapel user tuner interface.
   proc enableTuner() {
     if (!tuningEnabled && chpl_tuner_init()) {
-      globalTask = new TuningTask();
+      globalTask = new unmanaged TuningTask();
       tuningEnabled = true;
     }
   }
@@ -101,8 +103,8 @@ module Tuner {
   // Representation of independent tuning tasks.
   class TuningTask {
 
-    var functional: bool;
     var taskID: c_void_ptr;
+    var functional: bool;
     var firstName: string;
     var varsByName: domain(string);
     var bestVal: [varsByName] real;
@@ -114,8 +116,10 @@ module Tuner {
     var converged: bool = false;
     var performance: real = NAN;
 
-    proc TuningTask()
+    proc init()
     {
+      var empty: c_void_ptr;
+      taskID = empty;
       functional = chpl_tuner_task_new(taskID);
     }
 
@@ -135,7 +139,7 @@ module Tuner {
         // Tuner or tuning task is non-functional.  Return quickly.
         return initVal;
       }
-      else if (!varsByName.member(name)) {
+      else if (!varsByName.contains(name)) {
         // We've never seen this tuning variable before. Add it to our list.
         addNewVar(name, minVal, maxVal, stepVal, initVal);
       }
@@ -163,7 +167,7 @@ module Tuner {
       performance = value;
     }
 
-    proc isConverged(void) {
+    proc isConverged() {
       return (!functional || converged);
     }
 
