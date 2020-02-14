@@ -6,17 +6,17 @@ class MyClass {
 }
 
 proc okSetInInner() {
-  var x: owned MyClass;
+  var x: owned MyClass?;
   proc inner() {
     x = new owned MyClass(1);
   }
   inner();
-  x.method();
+  x!.method();
 }
 okSetInInner();
 
 proc okSetInTask() {
-  var x: owned MyClass;
+  var x: owned MyClass?;
   var s$: sync int;
 
   begin with (ref x) {
@@ -26,7 +26,7 @@ proc okSetInTask() {
 
   s$; // wait for task to complete
 
-  x.method();
+  x!.method();
 }
 okSetInTask();
 
@@ -37,7 +37,7 @@ proc setGlobal() {
 proc okSetGlobalInFn() {
   global = nil;
   setGlobal();
-  global.method();
+  global!.method();
   delete global;
 }
 okSetGlobalInFn();

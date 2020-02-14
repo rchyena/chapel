@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -18,18 +18,14 @@
  */
 
 module StringCasts {
-  use ChapelStandard;
+  private use ChapelStandard;
+  private use SysCTypes;
 
   // TODO: I want to break all of these casts from string to T out into
   // T.parse(string), but we dont support methods on types yet. Ideally they
   // would use a tagged union return val as well.
 
-  //
-  // Type -- Foo.type:string
-  //
-  proc _cast(type t:string, type x)  param : string {
-    return __primitive("typeToString", x);
-  }
+  // SomeType:string or Foo.type:string is handled directly by compiler.
 
   //
   // Bool
@@ -231,7 +227,7 @@ module StringCasts {
     }
 
     if isErr then
-      throw new owned IllegalArgumentError("bad cast from string '" + x + "' to real(" + numBits(t) + ")");
+      throw new owned IllegalArgumentError("bad cast from string '" + x + "' to real(" + numBits(t):string + ")");
 
     return retVal;
   }
@@ -257,7 +253,7 @@ module StringCasts {
     }
 
     if isErr then
-      throw new owned IllegalArgumentError("bad cast from string '" + x + "' to imag(" + numBits(t) + ")");
+      throw new owned IllegalArgumentError("bad cast from string '" + x + "' to imag(" + numBits(t):string + ")");
 
     return retVal;
   }
@@ -302,7 +298,7 @@ module StringCasts {
     const localX = x.localize();
 
     if localX.isEmpty() then
-      throw new owned IllegalArgumentError("bad cast from empty string to complex(" + numBits(t) + ")");
+      throw new owned IllegalArgumentError("bad cast from empty string to complex(" + numBits(t):string + ")");
 
     select numBits(t) {
       when 64 do retVal = c_string_to_complex64(localX.c_str(), isErr);
@@ -311,7 +307,7 @@ module StringCasts {
     }
 
     if isErr then
-      throw new owned IllegalArgumentError("bad cast from string '" + x + "' to complex(" + numBits(t) + ")");
+      throw new owned IllegalArgumentError("bad cast from string '" + x + "' to complex(" + numBits(t):string + ")");
 
     return retVal;
   }

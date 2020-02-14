@@ -1,6 +1,8 @@
 use AMRHierarchy_AdvectionCTU;
 use AMRBC_AdvectionCTU;
 
+use IO;
+
 
 //|\"""""""""""""""""""""""""""""""""""""""|\
 //| >    derived class: GradientFlagger    | >
@@ -25,7 +27,7 @@ class GradientFlagger: Flagger {
   // if this value exceeds 'tolerance'.
   //----------------------------------------------------------------------
   
-  proc setFlags (
+  override proc setFlags (
     level_solution: unmanaged LevelSolution, 
     flags:          [level_solution.level.possible_cells] bool )
   {

@@ -1,3 +1,5 @@
+use IO;
+
 config var numIterations = 1;
 config const printTimers = 0;
 
@@ -140,8 +142,8 @@ proc createBMP(bitmap:[] RGB, height: uint(32), width: uint(32), filename: strin
   var paddedWidth = 4*(((width*24)+31)/32) - width*sizeof(RGB);
   var pad: [0..#paddedWidth] uint(8);
 
-  image.magic(1) = 'B'.byte(1);
-  image.magic(2) = 'M'.byte(1);
+  image.magic(1) = 'B'.toByte();
+  image.magic(2) = 'M'.toByte();
 
   image.fileHeader.filesz = 2 + sizeof(bmpFileHeader) + sizeof(bmpDibHeader) + height*width*sizeof(RGB);
   image.fileHeader.creator1 = 0;

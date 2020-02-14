@@ -1,3 +1,6 @@
+// Allow access to stderr, stdout, iomode
+private use IO;
+
 //
 // Configuration params/types
 // (Override defaults on compiler line using -s<cfg>=<val>)
@@ -29,7 +32,7 @@ if (isIntegral(pixelType)) {
   if (numColors*bitsPerColor > numBits(pixelType)) then
     compilerError("pixelType '" + pixelType:string +
                   "' isn't big enough to store " +
-                  bitsPerColor + " bits per color");
+                  bitsPerColor:string + " bits per color");
 } else {
   compilerError("pixelType must be an integral type");
 }

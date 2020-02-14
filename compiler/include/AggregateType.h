@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -117,7 +117,7 @@ public:
   AggregateType*              getInstantiationParent(AggregateType* pt);
 
   AggregateType*              generateType(CallExpr* call, const char* callString);
-  AggregateType*              generateType(SymbolMap& subs, CallExpr* call, const char* callString, Expr* insnPoint = NULL);
+  AggregateType*              generateType(SymbolMap& subs, CallExpr* call, const char* callString, bool evalDefaults, Expr* insnPoint = NULL);
   void                        resolveConcreteType();
 
   bool                        isInstantiatedFrom(const AggregateType* base)
@@ -230,14 +230,16 @@ private:
   void                        addClassToHierarchy(
                                           std::set<AggregateType*>& seen);
 
+  void                        renameInstantiation();
+
   AggregateType*              instantiationWithParent(AggregateType* parent, Expr* insnPoint = NULL);
 
   Symbol*                     substitutionForField(Symbol*    field,
                                                    SymbolMap& subs)      const;
 
-  AggregateType*              getCurInstantiation(Symbol* sym);
+  AggregateType*              getCurInstantiation(Symbol* sym, Type* symType);
 
-  AggregateType*              getNewInstantiation(Symbol* sym, Expr* insnPoint = NULL);
+  AggregateType*              getNewInstantiation(Symbol* sym, Type* symType, Expr* insnPoint = NULL);
 
   AggregateType*              discoverParentAndCheck(Expr* storesName);
 
@@ -275,9 +277,10 @@ private:
 
 extern AggregateType* dtObject;
 
+extern AggregateType* dtBytes;
 extern AggregateType* dtString;
 extern AggregateType* dtLocale;
-
-DefExpr* defineObjectClass();
+extern AggregateType* dtOwned;
+extern AggregateType* dtShared;
 
 #endif

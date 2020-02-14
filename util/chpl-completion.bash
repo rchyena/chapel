@@ -51,6 +51,7 @@ _chpl ()
 --devel \
 --div-by-zero-checks \
 --dynamic \
+--early-deinit \
 --explain-call \
 --explain-call-id \
 --explain-instantiation \
@@ -78,6 +79,7 @@ _chpl ()
 --ignore-errors \
 --ignore-errors-for-pass \
 --ignore-local-classes \
+--ignore-nilability-errors \
 --ignore-user-errors \
 --incremental \
 --infer-const-refs \
@@ -89,7 +91,7 @@ _chpl ()
 --interprocedural-alias-analysis \
 --launcher \
 --ldflags \
---legacy-nilable-classes \
+--legacy-classes \
 --lib-linkage \
 --lib-search-path \
 --library \
@@ -149,6 +151,7 @@ _chpl ()
 --no-denormalize \
 --no-devel \
 --no-div-by-zero-checks \
+--no-early-deinit \
 --no-explain-verbose \
 --no-fast-followers \
 --no-force-vectorize \
@@ -160,6 +163,7 @@ _chpl ()
 --no-ignore-errors \
 --no-ignore-errors-for-pass \
 --no-ignore-local-classes \
+--no-ignore-nilability-errors \
 --no-ignore-user-errors \
 --no-incremental \
 --no-infer-const-refs \
@@ -167,7 +171,7 @@ _chpl ()
 --no-inline \
 --no-inline-iterators \
 --no-interprocedural-alias-analysis \
---no-legacy-nilable-classes \
+--no-legacy-classes \
 --no-library-ml-debug \
 --no-lifetime-checking \
 --no-live-analysis \
@@ -213,8 +217,10 @@ _chpl ()
 --no-replace-array-accesses-with-ref-temps \
 --no-report-aliases \
 --no-report-blocking \
+--no-report-expiring \
 --no-scalar-replacement \
 --no-specialize \
+--no-split-initialization \
 --no-stack-checks \
 --no-task-tracking \
 --no-tuple-copy-opt \
@@ -239,6 +245,8 @@ _chpl ()
 --parse-only \
 --parser-debug \
 --permit-unhandled-module-errors \
+--prepend-internal-module-dir \
+--prepend-standard-module-dir \
 --preserve-inlined-line-numbers \
 --print-all-candidates \
 --print-callgraph \
@@ -271,6 +279,7 @@ _chpl ()
 --report-blocking \
 --report-dead-blocks \
 --report-dead-modules \
+--report-expiring \
 --report-inlined-iterators \
 --report-inlining \
 --report-optimized-forall-unordered-ops \
@@ -284,6 +293,7 @@ _chpl ()
 --scalar-replacement \
 --set \
 --specialize \
+--split-initialization \
 --stack-checks \
 --static \
 --stop-after-pass \

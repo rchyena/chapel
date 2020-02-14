@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -29,6 +29,7 @@
 
 module Time {
   private use SysBasic;
+  private use HaltWrappers only;
 
 // Returns the number of seconds since midnight.  Has the potential for
 // microsecond resolution if supported by the runtime platform
@@ -126,7 +127,7 @@ inline proc sleep(t: real, unit: TimeUnits = TimeUnits.seconds) : void {
   extern proc chpl_task_sleep(s:c_double) : void;
 
   if t < 0 {
-    warning("sleep() called with negative time parameter: '"+t+"'");
+    warning("sleep() called with negative time parameter: '", t, "'");
     return;
   }
   chpl_task_sleep(_convert_to_seconds(unit, t:real):c_double);

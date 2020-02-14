@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -17,12 +17,16 @@
  * limitations under the License.
  */
 
+private use List;
 use MasonHelp;
 use MasonEnv;
 use MasonUpdate;
+use MasonUtils;
+use TOML;
 
 use FileSystem;
 use Regexp;
+use IO;
 
 //
 // TODO:
@@ -31,9 +35,16 @@ use Regexp;
 // - allow for exclusion of a pattern
 //
 
-proc masonSearch(origArgs : [] string) {
-  var args : [1..origArgs.size] string = origArgs;
+//
+// Temporary passthrough transforming array to list to appease the compiler.
+//
+proc masonSearch(args: [?d] string) {
+  var listArgs: list(string);
+  for x in args do listArgs.append(x);
+  masonSearch(listArgs);
+}
 
+proc masonSearch(ref args: list(string)) {
   if hasOptions(args, "-h", "--help") {
     masonSearchHelp();
     exit(0);
@@ -47,14 +58,14 @@ proc masonSearch(origArgs : [] string) {
   consumeArgs(args);
 
   // If no query is provided, list all packages in registry
-  const query = if args.size > 0 then args.tail().toLower()
+  const query = if args.size > 0 then args[args.size].toLower()
                 else ".*";
-  const pattern = compile(query, ignorecase=true);
+  const pattern = compile(query, ignoreCase=true);
 
-  var results : [1..0] string;
-  var packages: [1..0] string;
-  var versions: [1..0] string;
-  var registries: [1..0] string;
+  var results: list(string);
+  var packages: list(string);
+  var versions: list(string);
+  var registries: list(string);
 
   for registry in MASON_CACHED_REGISTRY {
     const searchDir = registry + "/Bricks/";
@@ -71,18 +82,18 @@ proc masonSearch(origArgs : [] string) {
           const ver = findLatest(searchDir + dir);
           const versionZero = new VersionInfo(0, 0, 0);
           if ver != versionZero {
-            results.push_back(name + " (" + ver.str() + ")");
-            packages.push_back(name);
-            versions.push_back(ver.str());
-            registries.push_back(registry);
+            results.append(name + " (" + ver.str() + ")");
+            packages.append(name);
+            versions.append(ver.str());
+            registries.append(registry);
           }
         }
       }
     }
   }
 
-  for r in results.sorted() do writeln(r);
-
+  for r in results.toArray().sorted() do writeln(r);
+  
   // Handle --show flag
   if show {
     if results.size == 1 {
@@ -117,6 +128,8 @@ proc isHidden(name : string) : bool {
 /* Search TOML files within a package directory to find the latest package
    version number that is supported with current Chapel version */
 proc findLatest(packageDir: string): VersionInfo {
+  use Path;
+
   var ret = new VersionInfo(0, 0, 0);
   const suffix = ".toml";
   const packageName = basename(packageDir);
@@ -146,16 +159,16 @@ proc findLatest(packageDir: string): VersionInfo {
   return ret;
 }
 
-proc consumeArgs(ref args : [] string) {
-  args.pop_front(); // binary name
-  const sub = args.head(); // 'search'
+proc consumeArgs(ref args : list(string)) {
+  args.pop(1);
+  const sub = args[1];
   assert(sub == "search");
-  args.pop_front();
+  args.pop(1);
 
   const options = {"--no-update", "--debug", "--show"};
 
-  while args.size > 0 && options.contains(args.head()) {
-    args.pop_front();
+  while args.size > 0 && options.contains(args[1]) {
+    args.pop(1);
   }
 }
 
@@ -163,7 +176,7 @@ proc consumeArgs(ref args : [] string) {
 /* Print a TOML file. Expects full path. */
 proc showToml(tomlFile : string) {
   const openFile = openreader(tomlFile);
-  const toml = new owned parseToml(openFile);
+  const toml = new owned(parseToml(openFile));
   writeln(toml);
   openFile.close();
 }

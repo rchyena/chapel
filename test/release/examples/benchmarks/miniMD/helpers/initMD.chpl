@@ -4,8 +4,9 @@ use Time;
 use thermo;
 use forces;
 use neighbor;
-use StencilDist;
-use BlockDist;
+public use StencilDist;
+public use BlockDist;
+private use IO;
 
 // used in testing system
 config param printOriginal = false;
@@ -241,14 +242,12 @@ var Dest, Src: [NeighDom] domain(3);
 
 setupComms();
 
-var fobj : owned Force;
+var fobj : owned Force =
+  if force == "lj" then new owned ForceLJ(force_cut): owned Force
+                   else new owned ForceEAM(force_cut);
 
-if force == "lj" {
-  fobj = new owned ForceLJ(force_cut);
-} else {
-  fobj = new owned ForceEAM(force_cut);
+if force != "lj" then
   mass = fobj.mass;
-}
 
 if printOriginal then writeln("# Create System:");
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -20,11 +20,14 @@
 
 
 /* A helper file of utilities for Mason */
-use Spawn;
-use FileSystem;
-use TOML;
-use Path;
-use MasonEnv;
+private use List;
+private use Map;
+
+public use Spawn;
+public use FileSystem;
+public use TOML;
+public use Path;
+public use MasonEnv;
 
 
 /* Gets environment variables for spawn commands */
@@ -32,7 +35,7 @@ extern proc getenv(name : c_string) : c_string;
 proc getEnv(name: string): string {
   var cname: c_string = name.c_str();
   var value = getenv(cname);
-  return value:string;
+  return createStringWithNewBuffer(value);
 }
 
 
@@ -52,7 +55,6 @@ proc makeTargetFiles(binLoc: string, projectHome: string) {
 
   const target = joinPath(projectHome, 'target');
   const srcBin = joinPath(target, binLoc);
-  const test = joinPath(target, 'test');
   const example = joinPath(target, 'example');
 
   if !isDir(target) {
@@ -61,11 +63,22 @@ proc makeTargetFiles(binLoc: string, projectHome: string) {
   if !isDir(srcBin) {
     mkdir(srcBin);
   }
-  if !isDir(test) {
-    mkdir(test);
-  }
   if !isDir(example) {
     mkdir(example);
+  }
+
+  const actualTest = joinPath(projectHome,'test');
+  if isDir(actualTest) {
+    for dir in walkdirs(actualTest) {
+      const internalDir = target+dir.replace(projectHome,"");
+      if !isDir(internalDir) {
+        mkdir(internalDir);
+      }
+    }
+  }
+  const test = joinPath(target, 'test');
+  if(!isDir(test)) {
+    mkdir(test);
   }
 }
 
@@ -196,6 +209,21 @@ proc runSpackCommand(command) {
 }
 
 
+proc hasOptions(args: list(string), const opts: string ...) {
+  var ret = false;
+
+  for o in opts {
+    const found = args.count(o) != 0;
+    if found {
+      ret = true;
+      break;
+    }
+  }
+
+  return ret;
+}
+
+
 proc hasOptions(args : [] string, const opts : string ...) {
   var ret = false;
 
@@ -209,6 +237,7 @@ proc hasOptions(args : [] string, const opts : string ...) {
 
   return ret;
 }
+
 
 record VersionInfo {
   var major = -1, minor = -1, bug = 0;
@@ -241,7 +270,7 @@ record VersionInfo {
   }
 
   proc str() {
-    return major + "." + minor + "." + bug;
+    return major:string + "." + minor:string + "." + bug:string;
   }
 
   proc cmp(other:VersionInfo) {
@@ -345,12 +374,12 @@ private var chplVersion = "";
 proc getChapelVersionStr() {
   if chplVersion == "" {
     const version = getChapelVersionInfo();
-    chplVersion = version(1) + "." + version(2) + "." + version(3);
+    chplVersion = version(1):string + "." + version(2):string + "." + version(3):string;
   }
   return chplVersion;
 }
 
-proc gitC(newDir, command, quiet=false) {
+proc gitC(newDir, command, quiet=false) throws {
   var ret : string;
 
   const oldDir = here.cwd();
@@ -392,6 +421,8 @@ extern "struct timespec" record chpl_timespec {
 }
 
 proc getLastModified(filename: string) : int {
+  use SysCTypes;
+
   extern proc sys_stat(filename: c_string, ref chpl_stat): c_int;
 
   var file_buf: chpl_stat;
@@ -455,7 +486,7 @@ proc isIdentifier(name:string) {
 /* Iterator to collect fields from a toml
    TODO custom fields returned */
 iter allFields(tomlTbl: unmanaged Toml) {
-  for (k,v) in zip(tomlTbl.D, tomlTbl.A) {
+  for (k,v) in tomlTbl.A.items() {
     if v.tag == fieldtag.fieldToml then
       continue;
     else yield(k,v);

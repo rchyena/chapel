@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -19,8 +19,9 @@
 
 module ChapelDistribution {
 
-  private use ChapelArray, ChapelLocks, ChapelRange;
-  use LinkedLists;
+  private use ChapelArray, ChapelRange;
+  public use ChapelLocks; // maybe make private when fields can be private?
+  public use LinkedLists; // maybe make private when fields can be private?
 
   //
   // Abstract distribution class
@@ -116,10 +117,6 @@ module ChapelDistribution {
     proc dsiNewAssociativeDom(type idxType, param parSafe: bool)
     where isEnumType(idxType) {
       compilerError("enumerated domains not supported by this distribution");
-    }
-
-    proc dsiNewOpaqueDom(type idxType, param parSafe: bool) {
-      compilerError("opaque domains not supported by this distribution");
     }
 
     proc dsiNewSparseDom(param rank: int, type idxType, dom: domain) {
@@ -382,7 +379,7 @@ module ChapelDistribution {
     }
 
     override proc dsiBulkAdd(inds: [] index(rank, idxType),
-        dataSorted=false, isUnique=false, preserveInds=true, addOn=nil:locale){
+        dataSorted=false, isUnique=false, preserveInds=true, addOn=nil:locale?){
 
       if !dataSorted && preserveInds {
         var _inds = inds;
@@ -394,7 +391,7 @@ module ChapelDistribution {
     }
 
     proc bulkAdd_help(inds: [?indsDom] index(rank, idxType),
-        dataSorted=false, isUnique=false, addOn=nil:locale){
+        dataSorted=false, isUnique=false, addOn=nil:locale?){
       halt("Helper function called on the BaseSparseDomImpl");
 
       return -1;
@@ -534,6 +531,40 @@ module ChapelDistribution {
 
   }
 
+  record SparseIndexBuffer {
+    param rank: int;
+    var obj: BaseSparseDom;
+
+    type idxType = if rank==1 then int else rank*int;
+    var bufDom = domain(1);
+    var buf: [bufDom] idxType;
+    var cur = 0;
+
+    proc init(size, param rank: int, obj) {
+      this.rank = rank;
+      this.obj = obj;
+      bufDom = {0..#size};
+    }
+
+    proc deinit() {
+      commit();
+    }
+
+    proc add(idx: idxType) {
+      buf[cur] = idx;
+      cur += 1;
+
+      if cur == buf.size then
+        commit();
+    }
+
+    proc commit() {
+      if cur >= 1 then
+        obj.dsiBulkAdd(buf[..cur-1]);
+      cur = 0;
+    }
+  }
+
   class BaseSparseDom : BaseDom {
     // rank and idxType will be moved to BaseDom
     param rank: int;
@@ -559,7 +590,8 @@ module ChapelDistribution {
     }
 
     proc dsiBulkAdd(inds: [] index(rank, idxType),
-        dataSorted=false, isUnique=false, preserveInds=true, addOn=nil:locale){
+        dataSorted=false, isUnique=false, preserveInds=true,
+        addOn=nil:locale?): int {
 
       halt("Bulk addition is not supported by this sparse domain");
       return 0;
@@ -594,6 +626,10 @@ module ChapelDistribution {
     proc dsiAlignedLow { return parentDom.alignedLow; }
     proc dsiAlignedHigh { return parentDom.alignedHigh; }
 
+    proc dsiMakeIndexBuffer(size) {
+      return new SparseIndexBuffer(rank=this.rank, obj=this, size=size);
+    }
+
   } // end BaseSparseDom
 
 
@@ -609,17 +645,6 @@ module ChapelDistribution {
     proc dsiAdd(idx) {
       compilerError("Index addition is not supported by this domain");
       return 0;
-    }
-
-  }
-
-  class BaseOpaqueDom : BaseDom {
-    proc deinit() {
-      // this is a bug workaround
-    }
-
-    proc dsiClear() {
-      halt("clear not implemented for this distribution");
     }
 
   }
@@ -926,21 +951,21 @@ module ChapelDistribution {
   // param privatized here is a workaround for the fact that
   // we can't include the privatized freeing for DefaultRectangular
   // because of resolution order issues
-  proc _delete_dist(dist:unmanaged BaseDist, param privatized:bool) {
+  proc _delete_dist(dist:unmanaged BaseDist, privatized:bool) {
     dist.dsiDestroyDist();
 
-    if privatized {
+    if _privatization && privatized {
       _freePrivatizedClass(dist.pid, dist);
     }
 
     delete dist;
   }
 
-  proc _delete_dom(dom, param privatized:bool) {
+  proc _delete_dom(dom, privatized:bool) {
 
     dom.dsiDestroyDom();
 
-    if privatized {
+    if _privatization && privatized {
       _freePrivatizedClass(dom.pid, dom);
     }
 
@@ -958,7 +983,7 @@ module ChapelDistribution {
     // refer to this inner domain.
     arr.decEltCountsIfNeeded();
 
-    if privatized {
+    if _privatization && privatized {
       _freePrivatizedClass(arr.pid, arr);
     }
 
@@ -1018,8 +1043,7 @@ module ChapelDistribution {
 
   proc chpl_assignDomainWithIndsIterSafeForRemoving(lhs:?t, rhs: domain)
     where isSubtype(_to_borrowed(t),BaseSparseDom) ||
-          isSubtype(_to_borrowed(t),BaseAssociativeDom) ||
-          isSubtype(_to_borrowed(t),BaseOpaqueDom)
+          isSubtype(_to_borrowed(t),BaseAssociativeDom)
   {
     //
     // BLC: It's tempting to do a clear + add here, but because

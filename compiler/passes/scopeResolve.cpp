@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -20,6 +20,7 @@
 #include "scopeResolve.h"
 
 #include "astutil.h"
+#include "baseAST.h"
 #include "build.h"
 #include "CatchStmt.h"
 #include "DecoratedClassType.h"
@@ -67,6 +68,10 @@ static bool                                   enableModuleUsesCache = false;
 typedef std::pair< std::pair<const char*,int>, const char* >  WFDIWmark;
 static std::set< std::pair< std::pair<const char*,int>, const char* > > warnedForDotInsideWith;
 
+// To avoid duplicate user warnings between resolveUnresolvedSymExpr and
+// resolveModuleCall
+static std::vector<BaseAST*> failedUSymExprs;
+
 static void          scopeResolve(ModuleSymbol*       module,
                                   const ResolveScope* root);
 
@@ -75,15 +80,18 @@ static void          scopeResolveExpr(Expr* expr, ResolveScope* scope);
 static bool          isStableClassType(Type* t);
 static Expr*         handleUnstableClassType(SymExpr* se);
 
-static void          resolveUnresolvedSymExpr(UnresolvedSymExpr* usymExpr);
+static astlocT*      resolveUnresolvedSymExpr(UnresolvedSymExpr* usymExpr,
+                                              bool returnRename = false);
 
 static void          resolveUnresolvedSymExpr(UnresolvedSymExpr* usymExpr,
-                                              Symbol* toSymbol);
+                                              Symbol* sym);
 
-static bool          lookupThisScopeAndUses(const char*           name,
-                                            BaseAST*              context,
-                                            BaseAST*              scope,
-                                            std::vector<Symbol*>& symbols);
+static bool lookupThisScopeAndUses(const char*           name,
+                                   BaseAST*              context,
+                                   BaseAST*              scope,
+                                   std::vector<Symbol*>& symbols,
+                                   std::map<Symbol*, astlocT*>& renameLocs,
+                                   bool storeRenames);
 
 static ModuleSymbol* definesModuleSymbol(Expr* expr);
 
@@ -119,7 +127,7 @@ static void handleReceiverFormals() {
           AggregateType::setCreationStyle(ts, fn);
 
         } else {
-          USR_FATAL(fn, "cannot resolve base type for method '%s'", fn->name);
+          USR_FATAL(fn, "cannot resolve base type for method '%s.%s'", sym->unresolved, fn->name);
         }
 
       } else if (SymExpr* sym = toSymExpr(stmt)) {
@@ -195,12 +203,12 @@ static void processGenericFields() {
 // to handle chpl__Program with little or no special casing.
 
 static void addToSymbolTable() {
-  ResolveScope* rootScope = ResolveScope::getRootModule();
+  rootScope = ResolveScope::getRootModule();
 
   // Extend the rootScope with every top-level definition
   for_alist(stmt, theProgram->block->body) {
     if (DefExpr* def = toDefExpr(stmt)) {
-      rootScope->extend(def->sym);
+      rootScope->extend(def->sym, /* isTopLevel= */ true);
     }
   }
 
@@ -650,32 +658,14 @@ static void resolveUnresolvedSymExprs() {
   // that is used to determine visible functions.
   //
 
-  int maxResolved = 0;
-  int i           = 0;
-
-  forv_Vec(UnresolvedSymExpr, unresolvedSymExpr, gUnresolvedSymExprs) {
-    resolveUnresolvedSymExpr(unresolvedSymExpr);
-
-    maxResolved++;
-  }
-
   forv_Vec(CallExpr, call, gCallExprs) {
     resolveModuleCall(call);
   }
 
-  // Note that the extern C resolution might add new UnresolvedSymExprs, and it
-  // might do that within resolveModuleCall, so we try resolving unresolved
-  // symbols a second time as the extern C block support might have added some.
-  //
-  // TODO: have the externCResolve call resolveUnresolved directly
   forv_Vec(UnresolvedSymExpr, unresolvedSymExpr, gUnresolvedSymExprs) {
-    // Only try resolving symbols that are new after last attempt.
-    if (i >= maxResolved) {
-      resolveUnresolvedSymExpr(unresolvedSymExpr);
-    }
-
-    i++;
+    resolveUnresolvedSymExpr(unresolvedSymExpr);
   }
+
 }
 
 void resolveUnresolvedSymExprs(BaseAST* inAst) {
@@ -727,8 +717,10 @@ static bool isStableClassType(Type* t) {
 static bool callSpecifiesClassKind(CallExpr* call) {
   return (call->isNamed("_to_borrowed") ||
           call->isPrimitive(PRIM_TO_BORROWED_CLASS) ||
+          call->isPrimitive(PRIM_TO_BORROWED_CLASS_CHECKED) ||
           call->isNamed("_to_unmanaged") ||
           call->isPrimitive(PRIM_TO_UNMANAGED_CLASS) ||
+          call->isPrimitive(PRIM_TO_UNMANAGED_CLASS_CHECKED) ||
           call->isNamed("_owned") ||
           call->isNamed("_shared") ||
           call->isNamed("Owned") ||
@@ -913,16 +905,28 @@ static Expr* handleUnstableClassType(SymExpr* se) {
   return se;
 }
 
-static void resolveUnresolvedSymExpr(UnresolvedSymExpr* usymExpr) {
+static astlocT* resolveUnresolvedSymExpr(UnresolvedSymExpr* usymExpr,
+                                         bool returnRename) {
   SET_LINENO(usymExpr);
 
   const char* name = usymExpr->unresolved;
   int nSymbols = 0;
 
   if (name == astrSdot || !usymExpr->inTree())
-    return;
+    return NULL;
 
-  Symbol* sym = lookupAndCount(name, usymExpr, nSymbols);
+  // Avoid duplicate work by not trying to resolve UnresolvedSymExprs that we've
+  // already encountered an error when trying to resolve.
+  for_vector(BaseAST, node, failedUSymExprs) {
+    // Should only be expensive in case where we are already erroring out,
+    // and we're already exiting compilation early in that case.
+    if (node == usymExpr)
+      return NULL;
+  }
+
+  astlocT* renameLoc = NULL;
+  Symbol* sym = lookupAndCount(name, usymExpr, nSymbols, returnRename,
+                               &renameLoc);
   if (sym != NULL) {
     resolveUnresolvedSymExpr(usymExpr, sym);
   } else {
@@ -936,8 +940,11 @@ static void resolveUnresolvedSymExpr(UnresolvedSymExpr* usymExpr) {
     }
 #endif
   }
+  return renameLoc;
 }
 
+// usymExpr is the UnresolveSymExpr and sym is what we
+// have resolved it to with scope resolution.
 static void resolveUnresolvedSymExpr(UnresolvedSymExpr* usymExpr,
                                      Symbol* sym) {
   FnSymbol* fn = toFnSymbol(sym);
@@ -945,16 +952,27 @@ static void resolveUnresolvedSymExpr(UnresolvedSymExpr* usymExpr,
   if (fn == NULL) {
     SymExpr* symExpr = NULL;
 
-    if (sym->hasFlag(FLAG_MANAGED_POINTER) && isTypeSymbol(sym)) {
-      AggregateType* at = toAggregateType(sym->type);
-      INT_ASSERT(at);
-      Type* t = at->getDecoratedClass(CLASS_TYPE_MANAGED);
-      INT_ASSERT(t);
-      symExpr = new SymExpr(t->symbol);
-    } else {
-      symExpr = new SymExpr(sym);
+    // Adjust class type symbols for generic management / generic nilability
+    if (isTypeSymbol(sym) && isClassLikeOrManaged(sym->type)) {
+      if (isDecoratedClassType(sym->type)) {
+        // Don't adjust already-decorated class types
+      } else if (isManagedPtrType(sym->type)) {
+        // e.g. 'owned' becomes 'owned with any nilability'
+        AggregateType* at = toAggregateType(sym->type);
+        INT_ASSERT(at);
+        Type* t = at->getDecoratedClass(CLASS_TYPE_MANAGED);
+        INT_ASSERT(t);
+        sym = t->symbol;
+      } else if (isClass(sym->type)) {
+        // Make 'MyClass' mean generic-management.
+        // Switch to the CLASS_TYPE_GENERIC_NONNIL decorated class type.
+        ClassTypeDecorator d = CLASS_TYPE_GENERIC_NONNIL;
+        Type* t = getDecoratedClass(sym->type, d);
+        sym = t->symbol;
+      }
     }
 
+    symExpr = new SymExpr(sym);
     usymExpr->replace(symExpr);
 
     if (fWarnUnstable)
@@ -976,6 +994,11 @@ static void resolveUnresolvedSymExpr(UnresolvedSymExpr* usymExpr,
 
     if (call == NULL || call->baseExpr != usymExpr) {
       CallExpr* primFn = NULL;
+
+      // Avoid duplicate wrapping with PRIM_CAPTURE_FN_*
+      if (call != NULL && (call->isPrimitive(PRIM_CAPTURE_FN_FOR_C) ||
+                           call->isPrimitive(PRIM_CAPTURE_FN_FOR_CHPL)))
+        return;
 
       // Wrap the FN in the appropriate way
       if (call != NULL && call->isNamed("c_ptrTo") == true) {
@@ -1016,7 +1039,7 @@ static void updateMethod(UnresolvedSymExpr* usymExpr,
 
   if (sym != NULL) {
     if (TypeSymbol* cts = toTypeSymbol(sym->defPoint->parentSymbol)) {
-      isAggr = isAggregateType(cts->type);
+      isAggr = isAggregateType(canonicalClassType(cts->type));
     }
   }
 
@@ -1090,7 +1113,7 @@ static void insertFieldAccess(FnSymbol*          method,
   }
 
   if (isTypeSymbol(sym) == true) {
-    AggregateType* at = toAggregateType(sym->type);
+    AggregateType* at = toAggregateType(canonicalClassType(sym->type));
     if (at != NULL && at->hasInitializers()) {
       dot = new SymExpr(sym);
     } else {
@@ -1356,6 +1379,15 @@ static CallExpr* resolveModuleGetNewExpr(CallExpr* call, Symbol* sym);
 
 static void resolveModuleCall(CallExpr* call) {
   if (call->isNamedAstr(astrSdot) == true) {
+    astlocT* renameLoc = NULL;
+    UnresolvedSymExpr* uSE = toUnresolvedSymExpr(call->get(1));
+    if (uSE != NULL) {
+      renameLoc = resolveUnresolvedSymExpr(uSE, true);
+    }
+
+    // Now that we've potentially resolved the unresolved sym expr, check if
+    // it's been replaced with a sym expr (or if it was one to start), and
+    // operate within it if so.
     if (SymExpr* se = toSymExpr(call->get(1))) {
       if (ModuleSymbol* mod = toModuleSymbol(se->symbol())) {
         SET_LINENO(call);
@@ -1368,6 +1400,14 @@ static void resolveModuleCall(CallExpr* call) {
 
         // First, try regular scope resolution
         Symbol* sym = scope->lookupNameLocally(mbrName);
+
+        // Adjust class types to undecorated
+        if (sym && isClass(sym->type)) {
+          // Switch to the CLASS_TYPE_GENERIC_NONNIL decorated class type.
+          ClassTypeDecorator d = CLASS_TYPE_GENERIC_NONNIL;
+          Type* t = getDecoratedClass(sym->type, d);
+          sym = t->symbol;
+        }
 
         // Failing that, try looking in an extern block.
 #ifdef HAVE_LLVM
@@ -1402,18 +1442,42 @@ static void resolveModuleCall(CallExpr* call) {
             }
 
           } else {
-            USR_FATAL(call,
-                      "Cannot access '%s', '%s' is private to '%s'",
-                      mbrName,
-                      mbrName,
-                      mod->name);
+            if (!uSE || uSE->unresolved == mod->name) {
+              USR_FATAL(call,
+                        "Cannot access '%s', '%s' is private to '%s'",
+                        mbrName,
+                        mbrName,
+                        mod->name);
+
+            } else {
+              USR_FATAL_CONT(call,
+                             "Cannot access '%s', '%s' is private to '%s'",
+                             mbrName,
+                             mbrName,
+                             uSE->unresolved);
+              USR_PRINT("module '%s' was renamed from '%s' at %s:%d",
+                        uSE->unresolved, mod->name, renameLoc->filename,
+                        renameLoc->lineno);
+
+            }
           }
 
         } else {
-          USR_FATAL_CONT(call,
-                         "Symbol '%s' undeclared in module '%s'",
-                         mbrName,
-                         mod->name);
+          if (!uSE || uSE->unresolved == mod->name) {
+            USR_FATAL_CONT(call,
+                           "Symbol '%s' undeclared in module '%s'",
+                           mbrName,
+                           mod->name);
+
+          } else {
+            USR_FATAL_CONT(call,
+                           "Symbol '%s' undeclared in module '%s'",
+                           mbrName,
+                           uSE->unresolved);
+            USR_PRINT("module '%s' was renamed from '%s' at %s:%d",
+                      uSE->unresolved, mod->name, renameLoc->filename,
+                      renameLoc->lineno);
+          }
         }
       }
     }
@@ -1424,7 +1488,7 @@ static void resolveModuleCall(CallExpr* call) {
 // for new SomeModule.SomeType.
 static CallExpr* resolveModuleGetNewExpr(CallExpr* call, Symbol* sym) {
   if (TypeSymbol* ts = toTypeSymbol(sym)) {
-    if (isAggregateType(ts->type)) {
+    if (isAggregateType(canonicalClassType(ts->type))) {
       if (CallExpr* parentCall = toCallExpr(call->parentExpr)) {
         if (CallExpr* grandParentCall = toCallExpr(parentCall->parentExpr)) {
           if (grandParentCall->isPrimitive(PRIM_NEW)) {
@@ -1502,24 +1566,7 @@ static void adjustTypeMethodsOnClasses() {
     }
 
     // Update the type of 'this'.
-    thisArg->type = dtAny;
-
-    // The desired where-expression. Clean up this.type for isSubtype().
-    SET_LINENO(thisArg);
-    Expr* isSubtype = new_Expr(
-     "'is_subtype'(%S,'to borrowed class'('to non nilable class'(%S)))",
-     thisType->symbol, thisArg);
-
-    if (BlockStmt* where = fn->where) {
-      // If a where-clause already exists, augment it.
-      Expr* userWhere = where->body.last()->remove();
-      where->insertAtTail(new CallExpr("&&", isSubtype, userWhere));
-
-    } else {
-      fn->where = new BlockStmt(isSubtype);
-      insert_help(fn->where, NULL, fn);
-      fn->addFlag(FLAG_COMPILER_ADDED_WHERE);
-    }
+    thisArg->type = getDecoratedClass(thisType, CLASS_TYPE_GENERIC);
   }
 }
 
@@ -1566,18 +1613,32 @@ static void lookup(const char*           name,
                    BaseAST*              scope,
                    Vec<BaseAST*>&        visited,
 
-                   std::vector<Symbol*>& symbols);
+                   std::vector<Symbol*>& symbols,
+                   std::map<Symbol*, astlocT*>& renameLocs,
+                   bool storeRenames);
 
 // Show what symbols from 'symbols' conflict with the given 'sym'.
-static void printConflictingSymbols(std::vector<Symbol*>& symbols, Symbol* sym)
+static void printConflictingSymbols(std::vector<Symbol*>& symbols, Symbol* sym,
+                                    const char* nameUsed,
+                                    bool storeRenames,
+                                    std::map<Symbol*, astlocT*> renameLocs)
 {
   Symbol* sampleFunction = NULL;
   for_vector(Symbol, another, symbols) if (another != sym)
   {
     if (isFnSymbol(another))
       sampleFunction = another;
-    else
-      USR_PRINT(another, "also defined here", another->name);
+    else {
+      astlocT* renameLoc = renameLocs[another];
+      if (storeRenames && renameLoc != NULL) {
+        USR_PRINT(another,
+                  "symbol '%s', defined here, was renamed to '%s' at %s:%d",
+                  another->name, nameUsed, renameLoc->filename,
+                  renameLoc->lineno);
+      } else {
+        USR_PRINT(another, "also defined here", another->name);
+      }
+    }
   }
 
   if (sampleFunction)
@@ -1589,12 +1650,15 @@ static void printConflictingSymbols(std::vector<Symbol*>& symbols, Symbol* sym)
 // by that name in the context of that call
 Symbol* lookupAndCount(const char*           name,
                        BaseAST*              context,
-                       int&                  nSymbolsFound) {
+                       int&                  nSymbolsFound,
+                       bool storeRenames,
+                       astlocT** renameLoc) {
 
   std::vector<Symbol*> symbols;
+  std::map<Symbol*, astlocT*> renameLocs;
   Symbol*              retval = NULL;
 
-  lookup(name, context, symbols);
+  lookup(name, context, symbols, renameLocs, storeRenames);
 
   nSymbolsFound = symbols.size();
 
@@ -1603,6 +1667,11 @@ Symbol* lookupAndCount(const char*           name,
 
   } else if (symbols.size() == 1) {
     retval = symbols[0];
+    if (storeRenames) {
+      if (astlocT* retvalRenameLoc = renameLocs[retval]) {
+        *renameLoc = retvalRenameLoc;
+      }
+    }
 
   } else {
     // Multiple symbols found for this name.
@@ -1612,8 +1681,14 @@ Symbol* lookupAndCount(const char*           name,
 
     for_vector(Symbol, sym, symbols) {
       if (! isFnSymbol(sym)) {
+        failedUSymExprs.push_back(context);
+        astlocT* symRenameLoc = renameLocs[sym];
         USR_FATAL_CONT(sym, "symbol %s is multiply defined", name);
-        printConflictingSymbols(symbols, sym);
+        if (storeRenames && symRenameLoc != NULL) {
+          USR_PRINT("'%s' was renamed to '%s' at %s:%d", sym->name,
+                    name, symRenameLoc->filename, symRenameLoc->lineno);
+        }
+        printConflictingSymbols(symbols, sym, name, storeRenames, renameLocs);
         break;
       }
     }
@@ -1631,10 +1706,12 @@ Symbol* lookup(const char* name, BaseAST* context) {
 
 void lookup(const char*           name,
             BaseAST*              context,
-            std::vector<Symbol*>& symbols) {
+            std::vector<Symbol*>& symbols,
+            std::map<Symbol*, astlocT*>& renameLocs,
+            bool storeRenames) {
   Vec<BaseAST*> visited;
 
-  lookup(name, context, context, visited, symbols);
+  lookup(name, context, context, visited, symbols, renameLocs, storeRenames);
 }
 
 static void lookup(const char*           name,
@@ -1643,12 +1720,15 @@ static void lookup(const char*           name,
                    BaseAST*              scope,
                    Vec<BaseAST*>&        visited,
 
-                   std::vector<Symbol*>& symbols) {
+                   std::vector<Symbol*>& symbols,
+                   std::map<Symbol*, astlocT*>& renameLocs,
+                   bool storeRenames) {
 
   if (!visited.set_in(scope)) {
     visited.set_add(scope);
 
-    if (lookupThisScopeAndUses(name, context, scope, symbols) == true) {
+    if (lookupThisScopeAndUses(name, context, scope, symbols, renameLocs,
+                               storeRenames) == true) {
       // We've found an instance here.
       // Lydia note: in the access call case, we'd want to look in our
       // surrounding scopes for the symbols on the left and right part
@@ -1664,8 +1744,19 @@ static void lookup(const char*           name,
 
     if (scope->getModule()->block == scope) {
       BaseAST* outerScope = getScope(scope);
-      if (outerScope != NULL)
-        lookup(name, context, outerScope, visited, symbols);
+      if (outerScope != NULL) {
+        lookup(name, context, outerScope, visited, symbols, renameLocs,
+               storeRenames);
+        // As a last ditch effort, see if this module's name happens to match.
+        // This handles the case when we refer to the name of the module in
+        // which we are declared (e.g., `module M { ...M.xyz... }`
+        if (symbols.size() == 0) {
+          ModuleSymbol* thisMod = scope->getModule();
+          if (strcmp(name, thisMod->name) == 0) {
+            symbols.push_back(thisMod);
+          }
+        }
+      }
 
     } else {
       // Otherwise, look in the next scope up.
@@ -1674,8 +1765,10 @@ static void lookup(const char*           name,
       if (fn != NULL && fn->_this) {
         // If currently in a method, the next scope up is anything visible
         // within the aggregate type
-        if (AggregateType* ct = toAggregateType(fn->_this->type)) {
-          lookup(name, context, ct->symbol, visited, symbols);
+        if (AggregateType* ct =
+            toAggregateType(canonicalClassType(fn->_this->type))) {
+          lookup(name, context, ct->symbol, visited, symbols, renameLocs,
+                 storeRenames);
         }
       }
 
@@ -1683,7 +1776,8 @@ static void lookup(const char*           name,
       if (symbols.size() == 0) {
         // If we didn't find something in the aggregate type that matched,
         // or we weren't in an aggregate type method, so look at next scope up.
-        lookup(name, context, getScope(scope), visited, symbols);
+        lookup(name, context, getScope(scope), visited, symbols, renameLocs,
+               storeRenames);
       }
     }
   }
@@ -1718,7 +1812,9 @@ static bool      skipUse(std::map<Symbol*, std::vector<UseStmt*> >* seen,
 static bool lookupThisScopeAndUses(const char*           name,
                                    BaseAST*              context,
                                    BaseAST*              scope,
-                                   std::vector<Symbol*>& symbols) {
+                                   std::vector<Symbol*>& symbols,
+                                   std::map<Symbol*, astlocT*>& renameLocs,
+                                   bool storeRenames) {
   if (Symbol* sym = inSymbolTable(name, scope)) {
     if (sym->hasFlag(FLAG_PRIVATE) == true) {
       if (sym->isVisible(context) == true) {
@@ -1779,10 +1875,16 @@ static bool lookupThisScopeAndUses(const char*           name,
                   if (sym->isVisible(context) == true &&
                       isRepeat(sym, symbols)  == false) {
                     symbols.push_back(sym);
+                    if (storeRenames && use->isARename(name)) {
+                      renameLocs[sym] = &use->astloc;
+                    }
                   }
 
                 } else if (isRepeat(sym, symbols) == false) {
                   symbols.push_back(sym);
+                  if (storeRenames && use->isARename(name)) {
+                    renameLocs[sym] = &use->astloc;
+                  }
                 }
               }
             }
@@ -1811,6 +1913,24 @@ static bool lookupThisScopeAndUses(const char*           name,
               USR_WARN(sym,
                        "Module level symbol is hiding function argument '%s'",
                        name);
+            }
+          }
+        } else {
+          // we haven't found a match yet, so as a last resort, let's
+          // check the names of the modules in the 'use' statements
+          // themselves...  This effectively places the module names at
+          // a scope just a bit further out than the one holding the
+          // symbols that they define.
+          forv_Vec(UseStmt, use, *moduleUses) {
+            if (use != NULL) {
+              if (Symbol* modSym = use->checkIfModuleNameMatches(name)) {
+                if (isRepeat(modSym, symbols) == false) {
+                  symbols.push_back(modSym);
+                  if (storeRenames && use->isARename()) {
+                    renameLocs[modSym] = &use->astloc;
+                  }
+                }
+              }
             }
           }
         }
@@ -1858,7 +1978,7 @@ static Symbol* inType(const char* name, BaseAST* scope) {
   Symbol* retval = NULL;
 
   if (TypeSymbol* ts = toTypeSymbol(scope)) {
-    if (AggregateType* ct = toAggregateType(ts->type)) {
+    if (AggregateType* ct = toAggregateType(canonicalClassType(ts->type))) {
       if (Symbol* sym = ct->getField(name, false)) {
         retval = sym;
 
@@ -2100,46 +2220,6 @@ bool Symbol::isVisible(BaseAST* scope) const {
 
 /************************************* | **************************************
 *                                                                             *
-* Returns true if this use statement is in the provided scope or capable of   *
-* being found in from the provided scope, false if the use statement is       *
-* private and the scope is not in its direct parent.                          *
-*                                                                             *
-************************************** | *************************************/
-bool UseStmt::isVisible(BaseAST* scope) const {
-  if (isPrivate) {
-    BaseAST* parentScope = getScope(this->parentExpr);
-    BaseAST* searchScope = scope;
-
-    INT_ASSERT(parentScope != NULL);
-
-    // We need to walk up scopes until we either find our parent scope (in
-    // which case, we're visible if it "use"s us) or we run out of scope to
-    // check against (in which case we are most certainly *not* visible)
-    while (searchScope != NULL) {
-      if (searchScope == parentScope) {
-        return true;
-      } else if (FnSymbol* fn = toFnSymbol(searchScope)) {
-        // Check instantiation points as well
-        if (BaseAST* inPt = fn->instantiationPoint()) {
-          if (isVisible(inPt)) {
-            return true;
-          }
-        }
-      }
-
-      searchScope = getScope(searchScope);
-    }
-
-    // We got to the top of the scope without finding the parent.
-    return false;
-  }
-
-  // If we got here, it's because the use statement was public
-  return true;
-}
-
-/************************************* | **************************************
-*                                                                             *
 * getScope returns the BaseAST that corresponds to the scope where 'ast'      *
 * exists; 'ast' must be an Expr or a Symbol.  Note that if you pass this a    *
 * BaseAST that defines a scope, the BaseAST that defines the scope where it   *
@@ -2228,132 +2308,174 @@ static ModuleSymbol* definesModuleSymbol(Expr* expr) {
 ************************************** | *************************************/
 
 
-
 // Find 'unmanaged SomeClass' and 'borrowed SomeClass' and replace these
 // with the compiler's simpler representation (canonical type or unmanaged type)
+void resolveUnmanagedBorrows(CallExpr* call) {
+  if (isClassDecoratorPrimitive(call)) {
+
+    // Give up now if the actual is missing.
+    if (call->numActuals() < 1)
+      return;
+
+    // Make sure to handle nested calls appropriately
+    if (CallExpr* sub = toCallExpr(call->get(1))) {
+      if (isClassDecoratorPrimitive(sub)) {
+        resolveUnmanagedBorrows(sub);
+      }
+    }
+
+    SymExpr* typeSymbolSe = NULL;
+    if (SymExpr* se = toSymExpr(call->get(1))) {
+      typeSymbolSe = se;
+    } else if (CallExpr* sub = toCallExpr(call->get(1))) {
+      if (sub->baseExpr != NULL) {
+        if (SymExpr* se = toSymExpr(sub->baseExpr)) {
+          typeSymbolSe = se;
+        }
+      }
+    }
+
+    if (typeSymbolSe != NULL) {
+      if (TypeSymbol* ts = toTypeSymbol(typeSymbolSe->symbol())) {
+        AggregateType* at = toAggregateType(canonicalDecoratedClassType(ts->type));
+
+        ClassTypeDecorator decorator = CLASS_TYPE_BORROWED;
+        if (isClassLike(ts->type)) {
+          decorator = classTypeDecorator(ts->type);
+        } else if (isManagedPtrType(ts->type) &&
+                   (call->isPrimitive(PRIM_TO_NILABLE_CLASS) ||
+                    call->isPrimitive(PRIM_TO_NILABLE_CLASS_CHECKED))) {
+          decorator = CLASS_TYPE_MANAGED;
+        } else {
+          const char* type = NULL;
+          if (call->isPrimitive(PRIM_TO_UNMANAGED_CLASS) ||
+              call->isPrimitive(PRIM_TO_UNMANAGED_CLASS_CHECKED))
+            type = "unmanaged";
+          else if (call->isPrimitive(PRIM_TO_BORROWED_CLASS) ||
+                   call->isPrimitive(PRIM_TO_BORROWED_CLASS_CHECKED))
+            type = "borrowed";
+          else if (call->isPrimitive(PRIM_TO_NILABLE_CLASS) ||
+                   call->isPrimitive(PRIM_TO_NILABLE_CLASS_CHECKED))
+            type = "?";
+          else if (call->isPrimitive(PRIM_TO_NON_NILABLE_CLASS))
+            type = "nonnil";
+
+          USR_FATAL_CONT(call, "%s can only apply to class types "
+                               "(%s is not a class type)",
+                               type, ts->name);
+          at = NULL;
+        }
+
+        // Compute the decorated class type
+        if (call->isPrimitive(PRIM_TO_UNMANAGED_CLASS) ||
+            call->isPrimitive(PRIM_TO_UNMANAGED_CLASS_CHECKED)) {
+          int tmp = decorator & CLASS_TYPE_NILABILITY_MASK;
+          tmp |= CLASS_TYPE_UNMANAGED;
+          decorator = (ClassTypeDecorator) tmp;
+        } else if (call->isPrimitive(PRIM_TO_BORROWED_CLASS) ||
+                   call->isPrimitive(PRIM_TO_BORROWED_CLASS_CHECKED)) {
+          int tmp = decorator & CLASS_TYPE_NILABILITY_MASK;
+          tmp |= CLASS_TYPE_BORROWED;
+          decorator = (ClassTypeDecorator) tmp;
+        } else if (call->isPrimitive(PRIM_TO_NILABLE_CLASS) ||
+                   call->isPrimitive(PRIM_TO_NILABLE_CLASS_CHECKED)) {
+          decorator = addNilableToDecorator(decorator);
+        } else if (call->isPrimitive(PRIM_TO_NON_NILABLE_CLASS)) {
+          decorator = addNonNilToDecorator(decorator);
+        }
+
+        Type* dt = NULL;
+        if (at) {
+          dt = at->getDecoratedClass(decorator);
+        } else {
+          // e.g. for borrowed?
+          switch (decorator) {
+            case CLASS_TYPE_BORROWED:
+              dt = dtBorrowed;
+              break;
+            case CLASS_TYPE_BORROWED_NONNIL:
+              dt = dtBorrowedNonNilable;
+              break;
+            case CLASS_TYPE_BORROWED_NILABLE:
+              dt = dtBorrowedNilable;
+              break;
+            case CLASS_TYPE_UNMANAGED:
+              dt = dtUnmanaged;
+              break;
+            case CLASS_TYPE_UNMANAGED_NILABLE:
+              dt = dtUnmanagedNilable;
+              break;
+            case CLASS_TYPE_UNMANAGED_NONNIL:
+              dt = dtUnmanagedNonNilable;
+              break;
+            case CLASS_TYPE_MANAGED:
+            case CLASS_TYPE_MANAGED_NONNIL:
+            case CLASS_TYPE_MANAGED_NILABLE:
+              INT_FATAL("case not handled");
+              break;
+            case CLASS_TYPE_GENERIC:
+              dt = dtAnyManagementAnyNilable;
+              break;
+            case CLASS_TYPE_GENERIC_NONNIL:
+              dt = dtAnyManagementNonNilable;
+              break;
+            case CLASS_TYPE_GENERIC_NILABLE:
+              dt = dtAnyManagementNilable;
+              break;
+            // no default intentionally
+          }
+          INT_ASSERT(dt);
+        }
+
+        if (dt) {
+          // Change the symexpr to point to the fixed type
+          typeSymbolSe->setSymbol(dt->symbol);
+          // Remove the PRIM_TO_UNMANAGED_CLASS etc
+          Expr* sub = call->get(1)->remove();
+          call->replace(sub);
+        }
+      }
+    }
+  }
+
+  // Fix e.g. call _owned class? or call _owned anymanaged Error
+  if (call->numActuals() == 1) {
+    SymExpr* se1 = toSymExpr(call->baseExpr);
+    SymExpr* se2 = toSymExpr(call->get(1));
+    if (se1 != NULL && se2 != NULL) {
+      TypeSymbol* ts1 = toTypeSymbol(se1->symbol());
+      TypeSymbol* ts2 = toTypeSymbol(se2->symbol());
+      if (ts1 != NULL && ts2 != NULL && isManagedPtrType(ts1->type)) {
+        AggregateType* mgmt = getManagedPtrManagerType(ts1->type);
+        Type* t2 = ts2->type;
+        Type* useType = NULL;
+        if (t2 == dtAnyManagementAnyNilable)
+          useType = mgmt; // e.g. just _owned
+        else if (t2 == dtAnyManagementNonNilable)
+          useType = mgmt->getDecoratedClass(CLASS_TYPE_MANAGED_NONNIL);
+        else if (t2 == dtAnyManagementNilable)
+          useType = mgmt->getDecoratedClass(CLASS_TYPE_MANAGED_NILABLE);
+
+        if (useType != NULL) {
+          SET_LINENO(call);
+          call->replace(new SymExpr(useType->symbol));
+        } else if (isClassLike(t2)) {
+          Type* canonical = canonicalClassType(t2);
+          if (isNilableClassType(t2))
+            useType = getDecoratedClass(canonical, CLASS_TYPE_BORROWED_NILABLE);
+          else
+            useType = canonical;
+
+          se2->setSymbol(useType->symbol);
+        }
+      }
+    }
+  }
+}
+
 static void resolveUnmanagedBorrows() {
-
   forv_Vec(CallExpr, call, gCallExprs) {
-    if (call->isPrimitive(PRIM_TO_UNMANAGED_CLASS) ||
-        call->isPrimitive(PRIM_TO_BORROWED_CLASS) ||
-        call->isPrimitive(PRIM_TO_NILABLE_CLASS) ||
-        call->isPrimitive(PRIM_TO_NON_NILABLE_CLASS)) {
-
-      if (SymExpr* se = toSymExpr(call->get(1))) {
-        if (TypeSymbol* ts = toTypeSymbol(se->symbol())) {
-          AggregateType* at = toAggregateType(canonicalDecoratedClassType(ts->type));
-
-          ClassTypeDecorator decorator = CLASS_TYPE_BORROWED;
-          if (isClassLike(ts->type)) {
-            decorator = classTypeDecorator(ts->type);
-          } else if (isManagedPtrType(ts->type) &&
-                     call->isPrimitive(PRIM_TO_NILABLE_CLASS)) {
-            decorator = CLASS_TYPE_MANAGED;
-          } else {
-            const char* type = NULL;
-            if (call->isPrimitive(PRIM_TO_UNMANAGED_CLASS))
-              type = "unmanaged";
-            else if (call->isPrimitive(PRIM_TO_BORROWED_CLASS))
-              type = "borrowed";
-            else if (call->isPrimitive(PRIM_TO_NILABLE_CLASS))
-              type = "?";
-            else if (call->isPrimitive(PRIM_TO_NON_NILABLE_CLASS))
-              type = "nonnil";
-
-            USR_FATAL_CONT(call, "%s can only apply to class types "
-                                 "(%s is not a class type)",
-                                 type, ts->name);
-            at = NULL;
-          }
-
-          // Compute the decorated class type
-          if (call->isPrimitive(PRIM_TO_UNMANAGED_CLASS)) {
-            int tmp = decorator & CLASS_TYPE_NILABILITY_MASK;
-            tmp |= CLASS_TYPE_UNMANAGED;
-            decorator = (ClassTypeDecorator) tmp;
-          } else if (call->isPrimitive(PRIM_TO_BORROWED_CLASS)) {
-            int tmp = decorator & CLASS_TYPE_NILABILITY_MASK;
-            tmp |= CLASS_TYPE_BORROWED;
-            decorator = (ClassTypeDecorator) tmp;
-          } else if (call->isPrimitive(PRIM_TO_NILABLE_CLASS)) {
-            decorator = addNilableToDecorator(decorator);
-          } else if (call->isPrimitive(PRIM_TO_NON_NILABLE_CLASS)) {
-            decorator = addNonNilToDecorator(decorator);
-          }
-
-          if (at) {
-            Type* dt = at->getDecoratedClass(decorator);
-            if (dt) {
-              // replace the call with a new symexpr pointing to ts
-              SET_LINENO(call);
-              call->replace(new SymExpr(dt->symbol));
-            }
-          } else {
-            // e.g. for borrowed?
-            Type* dt = NULL;
-            switch (decorator) {
-              case CLASS_TYPE_BORROWED:
-                dt = dtBorrowed;
-                break;
-              case CLASS_TYPE_BORROWED_NONNIL:
-                dt = dtBorrowedNonNilable;
-                break;
-              case CLASS_TYPE_BORROWED_NILABLE:
-                dt = dtBorrowedNilable;
-                break;
-              case CLASS_TYPE_UNMANAGED:
-                dt = dtUnmanaged;
-                break;
-              case CLASS_TYPE_UNMANAGED_NILABLE:
-                dt = dtUnmanagedNilable;
-                break;
-              case CLASS_TYPE_UNMANAGED_NONNIL:
-                dt = dtUnmanagedNonNilable;
-                break;
-              case CLASS_TYPE_MANAGED:
-              case CLASS_TYPE_MANAGED_NONNIL:
-              case CLASS_TYPE_MANAGED_NILABLE:
-                INT_FATAL("case not handled");
-                break;
-
-              // no default intentionally
-            }
-            INT_ASSERT(dt);
-            SET_LINENO(call);
-            call->replace(new SymExpr(dt->symbol));
-          }
-        }
-      }
-      // It's tempting to give type constructor calls the same treatment, but
-      // type constructors are handled separately later during resolution.
-    }
-
-    // fix e.g. unmanaged!
-    if (call->isNamedAstr(astrPostfixBang)) {
-      if (SymExpr* se = toSymExpr(call->get(1))) {
-        if (TypeSymbol* ts = toTypeSymbol(se->symbol())) {
-          Type* replace = NULL;
-
-          if (ts == dtBorrowed->symbol ||
-              ts == dtBorrowedNonNilable->symbol ||
-              ts == dtBorrowedNilable->symbol)
-            replace = dtBorrowedNonNilable;
-          else if (ts == dtUnmanaged->symbol ||
-                   ts == dtUnmanagedNonNilable->symbol ||
-                   ts == dtUnmanagedNilable->symbol)
-            replace = dtUnmanagedNonNilable;
-          else if (isManagedPtrType(ts->type)) {
-            AggregateType* at = toAggregateType(ts->type);
-            replace = at->getDecoratedClass(CLASS_TYPE_MANAGED_NONNIL);
-          }
-
-          if (replace) {
-            SET_LINENO(call);
-            call->replace(new SymExpr(replace->symbol));
-          }
-        }
-      }
-    }
+    resolveUnmanagedBorrows(call);
   }
 }
 
@@ -2409,7 +2531,7 @@ static void detectUserDefinedBorrowMethods() {
   forv_Vec(FnSymbol, fn, gFnSymbols) {
     if (fn->isMethod() && fn->name == astrBorrow) {
       Type *thisType = fn->_this->type;
-      if (isClassLike(thisType) && 
+      if (isClassLike(thisType) &&
           !thisType->symbol->hasFlag(FLAG_MANAGED_POINTER)) {
         USR_FATAL("Classes cannot define a method named \"borrow\"");
       }

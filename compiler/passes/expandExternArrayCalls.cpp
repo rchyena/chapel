@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  * 
  * The entirety of this work is licensed under the Apache License,
@@ -100,6 +100,7 @@ void expandExternArrayCalls() {
       fn->addFlag(FLAG_EXTERN_FN_WITH_ARRAY_ARG);
       fn->addFlag(FLAG_VOID_NO_RETURN_VALUE);
       fcopy->removeFlag(FLAG_EXTERN);
+      fcopy->removeFlag(FLAG_NO_FN_BODY);
       fcopy->addFlag(FLAG_INLINE);
 
       fcopy->cname = astr("chpl__extern_array_wrapper_", fcopy->cname);

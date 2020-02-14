@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -451,10 +451,42 @@ bool ErrorHandlingVisitor::enterForLoop(ForLoop* node) {
   return true;
 }
 
+
+static bool canForallStmtThrow(ForallStmt* fs) {
+  // Do this first to check for throwing non-POD initializer exprs.
+  for_shadow_vars(svar, temp, fs) {
+    if (BlockStmt* IB = svar->initBlock()) {
+      if (canBlockStmtThrow(IB)) {
+        if (! isPOD(svar->type))
+          // The AST currently created by the compiler executes all TPVs'
+          // deinitializers when any of their initializing exprs throws.
+          // This will deinitialize at least one not-yet-initialized TPV. Bad.
+          USR_FATAL_CONT(IB, "the initialization expression of the task-private"
+            " variable '%s' throws - this is currently not supported"
+            " for variables of non-POD types", svar->name);
+        return true;
+      }
+    }
+    if (BlockStmt* DB = svar->deinitBlock()) {
+      if (canBlockStmtThrow(DB))
+        // Error handling for the deinit blocks may be unimplemented.
+        USR_FATAL_CONT(DB, "the deinitializer of the task-private variable '%s'"
+                       " throws - this is currently not supported");
+    }
+  }
+
+  // Now check the loop body.
+  if (canBlockStmtThrow(fs->loopBody()))
+    return true;
+
+  // Did not find anything that throws.
+  return false;
+}
+
 bool ErrorHandlingVisitor::enterForallStmt(ForallStmt* node) {
   // We assume that fRecIterGetIterator/fRecIterFreeIterator do not throw.
 
-  if (!canBlockStmtThrow(node->loopBody()))
+  if (!canForallStmtThrow(node))
     return true;
 
   SET_LINENO(node);
@@ -631,15 +663,18 @@ static bool catchesNotExhaustive(TryStmt* tryStmt) {
 static bool shouldEnforceStrict(CallExpr* node, int taskFunctionDepth) {
   if (FnSymbol* calledFn = node->resolvedFunction()) {
     bool inCompilerGeneratedFn = false;
+    bool inDefaultActualFn = false;
     if (FnSymbol* parentFn = toFnSymbol(node->parentSymbol)) {
       // Don't check wrapper functions in strict mode, unless they are task
       // functions and we know the caller of the task function is not declared
       // as throws.
       inCompilerGeneratedFn = isCompilerGeneratedFunction(parentFn) &&
         !(isTaskFun(parentFn) && taskFunctionDepth > 0);
+      inDefaultActualFn = parentFn->hasFlag(FLAG_DEFAULT_ACTUAL_FUNCTION);
     }
     bool callsUncheckedThrowsFn = isUncheckedThrowsFunction(calledFn);
-    bool strictError = !(inCompilerGeneratedFn || callsUncheckedThrowsFn);
+    bool strictError = !((inCompilerGeneratedFn && !inDefaultActualFn) ||
+                         callsUncheckedThrowsFn);
 
     return strictError;
   }

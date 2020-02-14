@@ -10,7 +10,7 @@ class Instance {
 
 record R {
   var x: int = 0;
-  var ptr: unmanaged Instance = nil;
+  var ptr: unmanaged Instance? = nil;
 }
 
 proc R.init() {
@@ -46,7 +46,7 @@ proc check(r:R)
 {
   assert(r.x > 0);
   assert(r.ptr != nil);
-  assert(r.ptr.x == r.x);
+  assert(r.ptr!.x == r.x);
 }
 
 var global = new R(1);

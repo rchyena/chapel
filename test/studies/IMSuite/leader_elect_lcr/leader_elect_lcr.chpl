@@ -23,6 +23,7 @@
 
  pragma "error mode fatal"
  module leader_elect_lcr {
+     use IO;
 
      config const inputFile = "input/inputleader_elect_lcr_8.txt";
      config const outputFile = "outputleader_elect_lcr_8.txt";
@@ -182,8 +183,8 @@
     proc printLeader() {
         var outfile = open(outputFile, iomode.cw);
         var writer = outfile.writer();
-        writer.writeln("Leader: " + processSet[0].leaderId);
-        writeln("Leader: " + processSet[0].leaderId);
+        writer.writeln("Leader: ", processSet[0].leaderId);
+        writeln("Leader: ", processSet[0].leaderId);
         writer.close();
         outfile.close();
     }

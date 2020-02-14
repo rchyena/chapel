@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -68,13 +68,14 @@ public:
 
   ModuleSymbol*         enclosingModule()                                const;
 
-  bool                  extend(Symbol*        sym);
+  bool                  extend(Symbol*        sym, bool isTopLevel=false);
 
   bool                  extend(const UseStmt* stmt);
 
-  Symbol*               lookup(Expr*       expr)                         const;
+  Symbol*               lookup(Expr*       expr, bool isUse=false)       const;
 
-  Symbol*               lookupNameLocally(const char* name)              const;
+  Symbol*               lookupNameLocally(const char* name,
+                                          bool isUse=false)              const;
 
   // Support for UseStmt with only/except
   // Has the potential to return multiple fields
@@ -103,13 +104,16 @@ private:
   bool                  isSymbolAndMethod(Symbol* sym0,
                                           Symbol* sym1);
 
-  Symbol*               lookup(UnresolvedSymExpr* usymExpr)              const;
+  Symbol*               lookup(UnresolvedSymExpr* usymExpr,
+                               bool isUse=false)                         const;
 
-  Symbol*               lookupWithUses(UnresolvedSymExpr* usymExpr)      const;
+  Symbol*               lookupWithUses(UnresolvedSymExpr* usymExpr,
+                                       bool isUse=false)                 const;
 
   bool                  isRepeat(Symbol* toAdd, const SymList& symbols)  const;
 
-  Symbol*               getFieldFromPath(CallExpr* dottedExpr)           const;
+  Symbol*               getFieldFromPath(CallExpr* dottedExpr,
+                                         bool isUse=false)               const;
 
   Symbol*               getField(const char* fieldName)                  const;
 
@@ -136,5 +140,7 @@ private:
   Bindings              mBindings;
   UseList               mUseList;
 };
+
+extern ResolveScope* rootScope;
 
 #endif

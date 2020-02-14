@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  * 
  * The entirety of this work is licensed under the Apache License,
@@ -103,7 +103,7 @@ struct GenInfo {
   llvm::TargetMachine* targetMachine;
 
   std::stack<LoopData> loopStack;
-  std::vector<std::set<Symbol*> > currentStackVariables;
+  std::vector<std::pair<llvm::Value*, llvm::Type*> > currentStackVariables;
 
   llvm::LLVMContext llvmContext;
   llvm::MDNode* tbaaRootNode;

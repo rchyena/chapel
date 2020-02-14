@@ -1,3 +1,5 @@
+use IO;
+
 config const outfileName = "output.bin";
 
 config const displayInput = false;
@@ -24,7 +26,7 @@ proc main(args: [] string) {
   if iterations < 1 then
     halt("need at least one iteration");
 
-  const infileName = nx + "x" + ny + "x" + nz + ".bin";
+  const infileName = nx:string + "x" + ny:string + "x" + nz:string + ".bin";
 
   totalTimer.start();
 

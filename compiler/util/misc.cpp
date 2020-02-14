@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -53,6 +53,8 @@ static int         err_print        =    0;
 static int         err_ignore       =    0;
 
 static FnSymbol*   err_fn           = NULL;
+static int         err_fn_id        = 0;
+static bool        err_fn_header_printed = false;
 
 static bool forceWidePtrs();
 
@@ -140,6 +142,20 @@ static bool forceWidePtrs() {
   return (strcmp(CHPL_LOCALE_MODEL, "flat") != 0);
 }
 
+static void vprint_error(const char* format, va_list vl) {
+  vfprintf(stderr, format, vl);
+
+  // This function could hide errors & save them for later re-issue.
+  // See the commit history for this comment for a start in that direction.
+}
+
+static void print_error(const char* format, ...) {
+  va_list vl;
+  va_start(vl, format);
+  vprint_error(format, vl);
+  va_end(vl);
+}
+
 static void print_user_internal_error() {
   char error[20];
 
@@ -196,65 +212,169 @@ static void print_user_internal_error() {
     }
   }
 
-  fprintf(stderr, "%s ", error);
+  print_error("%s ", error);
 
   get_version(version);
 
-  fprintf(stderr, "chpl version %s", version);
+  print_error("chpl version %s", version);
 }
 
 
-// find a caller (direct or not) that is not in a task function,
-// for line number reporting
-static FnSymbol* findNonTaskCaller(FnSymbol* fn) {
-  FnSymbol* retval = NULL;
+// find an AST location that is:
+//   not in an inlined function or a task function in an inlined function
+//     in non-user modules
+//     (assuming preserveInlinedLineNumbers==false)
+// to use for line number reporting.
+static Expr* findLocationIgnoringInternalInlining(Expr* cur) {
 
-  if (fn == NULL || fn->inTree() == false) {
-    retval = fn;
+  while (true) {
+    if (cur == NULL || cur->parentSymbol == NULL)
+      return cur;
 
-  } else {
-    while (retval == NULL) {
-      if (isTaskFun(fn) == false) {
-        retval = fn;
-      } else {
-        FnSymbol* caller = NULL;
+    FnSymbol* curFn = cur->getFunction();
+    // If we didn't find a function, or it's not in tree, give up
+    if (curFn == NULL || curFn->inTree() == false)
+      return cur;
 
-        forv_Vec(CallExpr, call, gCallExprs) {
-          if (call->inTree() == true) {
-            if (FnSymbol* cfn = call->resolvedFunction()) {
-              if (cfn == fn) {
-                caller = toFnSymbol(call->parentSymbol);
-                break;
-              }
-            }
-          }
-        }
+    // If it's already in user code, use that, because
+    // the line number is probably better
+    if (curFn->getModule()->modTag == MOD_USER)
+      return cur;
 
-        if (caller == NULL) {
-          retval = fn;
-        } else {
-          fn     = caller;
-        }
+    bool inlined = curFn->hasFlag(FLAG_INLINED_FN);
+
+    if (inlined == false || preserveInlinedLineNumbers)
+      return cur;
+
+    // Look for a call to that function
+    for_SymbolSymExprs(se, curFn) {
+      CallExpr* call = toCallExpr(se->parentExpr);
+      if (se == call->baseExpr) {
+        // Switch to considering that call point
+        cur = call;
+        break;
       }
     }
   }
 
-  return retval;
+  return cur; // never reached
 }
 
-static bool printErrorHeader(const BaseAST* ast) {
+bool printsUserLocation(const BaseAST* astIn) {
+  BaseAST* ast = const_cast<BaseAST*>(astIn);
+
+  if (Expr* expr = toExpr(ast)) {
+    Expr* foundExpr = findLocationIgnoringInternalInlining(expr);
+    if (foundExpr != NULL)
+      ast = foundExpr;
+  }
+
+  return (ast && ast->getModule()->modTag == MOD_USER);
+}
+
+// find a caller (direct or not) that is not in a task function,
+// for line number reporting
+static FnSymbol* findNonTaskCaller(FnSymbol* fn) {
+
+  FnSymbol* lastFn = fn;
+  while (true) {
+    // If we ran out of functions in tree, use the last one
+    if (fn == NULL || fn->inTree() == false)
+      return lastFn;
+
+    // If it's not a task function, we are done
+    if (isTaskFun(fn) == false)
+      return fn;
+
+    // Otherwise, find the call site, and continue the search.
+    for_SymbolSymExprs(se, fn) {
+      CallExpr* call = toCallExpr(se->parentExpr);
+      if (se == call->baseExpr) {
+        lastFn = fn;
+        fn = call->getFunction();
+        break;
+      }
+    }
+  }
+
+  return lastFn; // never reached
+}
+
+// Print instantiation information for err_fn.
+// Should be called at USR_STOP or just before the next
+// error changing err_fn is printed.
+static void printInstantiationNoteForLastError() {
+  if (err_fn_header_printed && err_fn && err_fn->instantiatedFrom) {
+
+    // Find the first call to the function within the instantiation point,
+    // so that we can have a better error message line number.
+    BlockStmt* instantiationPoint = err_fn->instantiationPoint();
+    Expr* bestPoint = instantiationPoint;
+
+    if (instantiationPoint != NULL) {
+      std::vector<CallExpr*> calls;
+      collectFnCalls(instantiationPoint, calls);
+      for_vector(CallExpr, call, calls) {
+        if (FnSymbol* fn = call->resolvedOrVirtualFunction()) {
+          if (fn == err_fn) {
+            bestPoint = call;
+            break;
+          }
+        }
+      }
+
+      const char* subsDesc = err_fn->substitutionsToString(", ");
+
+      const char* intro = "";
+      if (strcmp(err_fn->name, "init") == 0)
+        intro = "Initializer";
+      else if (err_fn->isIterator())
+        intro = astr("Iterator ", "'", err_fn->name, "'");
+      else
+        intro = astr("Function ", "'", err_fn->name, "'");
+
+      if (subsDesc == NULL || subsDesc[0] == '\0') {
+        print_error("%s:%d: %s instantiated here\n",
+                    cleanFilename(bestPoint),
+                    bestPoint->linenum(),
+                    intro);
+      } else {
+        print_error("%s:%d: %s instantiated as: %s(%s)\n",
+                    cleanFilename(bestPoint),
+                    bestPoint->linenum(),
+                    intro,
+                    err_fn->name,
+                    subsDesc);
+      }
+    }
+  }
+
+  // Clear this variable in case e.g. err_fn is deleted in a future pass
+  err_fn = NULL;
+}
+
+static bool printErrorHeader(BaseAST* ast) {
+
+  if (Expr* expr = toExpr(ast)) {
+    Expr* use = findLocationIgnoringInternalInlining(expr);
+    if (use != NULL)
+      ast = use;
+  }
+
   if (!err_print) {
-    if (const Expr* expr = toConstExpr(ast)) {
-      Symbol* parent = expr->parentSymbol;
+    if (Expr* expr = toExpr(ast)) {
+      FnSymbol* fn = NULL;
+      if (expr && expr->parentSymbol != NULL)
+        fn = findNonTaskCaller(expr->getFunction());
 
-      if (isArgSymbol(parent))
-        parent = parent->defPoint->parentSymbol;
+      // Don't consider functions that aren't in the tree
+      if (fn != NULL)
+        if (fn->defPoint == NULL || !fn->inTree())
+          fn = NULL;
 
-      FnSymbol* fn = toFnSymbol(parent);
-
-      fn = findNonTaskCaller(fn);
-
-      if (fn && fn != err_fn) {
+      if (fn && fn->id != err_fn_id) {
+        printInstantiationNoteForLastError();
+        err_fn_header_printed = false;
         err_fn = fn;
 
         while ((fn = toFnSymbol(err_fn->defPoint->parentSymbol))) {
@@ -264,6 +384,7 @@ static bool printErrorHeader(const BaseAST* ast) {
 
           err_fn = fn;
         }
+        err_fn_id = err_fn->id;
 
         // If the function is compiler-generated, or inlined, or doesn't match
         // the error function and line number, nothing is printed.
@@ -283,20 +404,18 @@ static bool printErrorHeader(const BaseAST* ast) {
           }
 
           if (suppress == false) {
-            fprintf(stderr,
-                    "%s:%d: In ",
-                    cleanFilename(err_fn),
-                    err_fn->linenum());
+            print_error("%s:%d: In ", cleanFilename(err_fn), err_fn->linenum());
 
             if (strcmp(err_fn->name, "init") == 0) {
-              fprintf(stderr, "initializer:\n");
+              print_error("initializer:\n");
 
             } else {
-              fprintf(stderr,
-                      "%s '%s':\n",
-                      (err_fn->isIterator() ? "iterator" : "function"),
-                      err_fn->name);
+              print_error("%s '%s':\n",
+                          (err_fn->isIterator() ? "iterator" : "function"),
+                          err_fn->name);
             }
+            // We printed the header, so can print instantiation notes.
+            err_fn_header_printed = true;
           }
         }
       }
@@ -328,19 +447,19 @@ static bool printErrorHeader(const BaseAST* ast) {
   bool guess = filename && !have_ast_line;
 
   if (filename) {
-    fprintf(stderr, "%s:%d: ", filename, linenum);
+    print_error("%s:%d: ", filename, linenum);
   }
 
   if (err_print) {
-    fprintf(stderr, "note: ");
+    print_error("note: ");
   } else if (err_fatal) {
     if (err_user) {
-      fprintf(stderr, "error: ");
+      print_error("error: ");
     } else {
-      fprintf(stderr, "internal error: ");
+      print_error("internal error: ");
     }
   } else {
-    fprintf(stderr, "warning: ");
+    print_error("warning: ");
   }
 
   if (!err_user) {
@@ -358,7 +477,7 @@ static void printErrorFooter(bool guess) {
   // internal error was generated.
   //
   if (developer && !err_user)
-    fprintf(stderr, " [%s/%s:%d]", err_subdir, err_filename, err_lineno);
+    print_error(" [%s/%s:%d]", err_subdir, err_filename, err_lineno);
 
   //
   // For users and developers, if the source line was a guess (i.e., an
@@ -366,24 +485,25 @@ static void printErrorFooter(bool guess) {
   // global SET_LINENO() information instead), indicate that.
   //
   if (guess) {
-    fprintf(stderr, "\nNote: This source location is a guess.");
+    print_error("\nNote: This source location is a guess.");
   }
 
   //
   // Apologize for our internal errors to the end-user
   //
   if (!developer && !err_user) {
-    fprintf(stderr, "\n\n"
-            "Internal errors indicate a bug in the Chapel compiler (\"It's us, not you\"),\n"
-            "and we're sorry for the hassle.  We would appreciate your reporting this bug -- \n"
-            "please see %s for instructions.  In the meantime,\n"
-            "the filename + line number above may be useful in working around the issue.\n\n",
-            help_url);
+    print_error("\n\n"
+      "Internal errors indicate a bug in the Chapel compiler (\"It's us, not you\"),\n"
+      "and we're sorry for the hassle.  We would appreciate your reporting this bug -- \n"
+      "please see %s for instructions.  In the meantime,\n"
+      "the filename + line number above may be useful in working around the issue.\n\n",
+      help_url);
 
     //
     // and exit if it's fatal (isn't it always?)
     //
     if (err_fatal && !(err_user && ignore_user_errors)) {
+      printInstantiationNoteForLastError();
       clean_exit(1);
     }
   }
@@ -395,14 +515,17 @@ static void printErrorFooter(bool guess) {
 // on the call stack. This can be called from a debugger to to see what the
 // call chain looks like e.g. after a resolution error.
 //
-void printCallStack(bool force, bool shortModule, FILE* out) {
+static void printCallStack(bool force, bool shortModule, FILE* out) {
   if (!force) {
     if (!fPrintCallStackOnError || err_print || callStack.n <= 1)
       return;
   }
 
   if (!developer) {
-    fprintf(out, "while processing the following Chapel call chain:\n");
+    if (out == NULL)
+      print_error("while processing the following Chapel call chain:\n");
+    else
+      fprintf(out, "while processing the following Chapel call chain:\n");
   }
 
   for (int i = callStack.n-1; i >= 0; i--) {
@@ -410,12 +533,21 @@ void printCallStack(bool force, bool shortModule, FILE* out) {
     FnSymbol*     fn     = call->getFunction();
     ModuleSymbol* module = call->getModule();
 
-    fprintf(out,
-            "  %s:%d: %s%s%s\n",
-            (shortModule ? module->name : cleanFilename(fn->fname())),
-            call->linenum(), toString(fn),
-            (module->modTag == MOD_INTERNAL ? " [internal module]" : ""),
-            (fn->hasFlag(FLAG_COMPILER_GENERATED) ? " [compiler-generated]" : ""));
+    if (out == NULL)
+      print_error(
+              "  %s:%d: %s%s%s\n",
+              (shortModule ? module->name : cleanFilename(fn->fname())),
+              call->linenum(), toString(fn),
+              (module->modTag == MOD_INTERNAL ? " [internal module]" : ""),
+              (fn->hasFlag(FLAG_COMPILER_GENERATED) ? " [compiler-generated]" : ""));
+    else
+      fprintf(out,
+              "  %s:%d: %s%s%s\n",
+              (shortModule ? module->name : cleanFilename(fn->fname())),
+              call->linenum(), toString(fn),
+              (module->modTag == MOD_INTERNAL ? " [internal module]" : ""),
+              (fn->hasFlag(FLAG_COMPILER_GENERATED) ? " [compiler-generated]" : ""));
+
   }
 }
 
@@ -464,16 +596,13 @@ void handleError(const char* fmt, ...) {
   //
   if (err_user || developer) {
     va_list args;
-
     va_start(args, fmt);
-
-    vfprintf(stderr, fmt, args);
-
+    vprint_error(fmt, args);
     va_end(args);
   }
 
   printErrorFooter(guess);
-  fprintf(stderr, "\n");
+  print_error("\n");
 
   printCallStackOnError();
 
@@ -485,6 +614,7 @@ void handleError(const char* fmt, ...) {
     if (ignore_errors_for_pass) {
       exit_end_of_pass = true;
     } else if (!ignore_errors && !(ignore_user_errors && err_user)) {
+      printInstantiationNoteForLastError();
       clean_exit(1);
     }
   }
@@ -497,8 +627,7 @@ void handleError(const char* fmt, ...) {
 *                                                                             *
 ************************************** | *************************************/
 
-static void vhandleError(FILE*          file,
-                         const BaseAST* ast,
+static void vhandleError(const BaseAST* ast,
                          const char*    fmt,
                          va_list        args);
 
@@ -507,22 +636,12 @@ void handleError(const BaseAST* ast, const char *fmt, ...) {
 
   va_start(args, fmt);
 
-  vhandleError(stderr, ast, fmt, args);
+  vhandleError(ast, fmt, args);
 
   va_end(args);
 }
 
-void handleError(FILE* file, const BaseAST* ast, const char* fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-
-  vhandleError(file, ast, fmt, args);
-
-  va_end(args);
-}
-
-static void vhandleError(FILE*          file,
-                         const BaseAST* ast,
+static void vhandleError(const BaseAST* ast,
                          const char*    fmt,
                          va_list        args) {
   if (err_ignore) {
@@ -531,27 +650,21 @@ static void vhandleError(FILE*          file,
 
   bool guess = false;
 
-  if (file == stderr) {
-    guess = printErrorHeader(ast);
-  }
+  guess = printErrorHeader(const_cast<BaseAST*>(ast));
 
   if (err_user || developer) {
-    vfprintf(file, fmt, args);
+    vprint_error(fmt, args);
   }
 
   if (fPrintIDonError && ast) {
-    fprintf(file, " [%d]", ast->id);
+    print_error(" [%d]", ast->id);
   }
 
-  if (file == stderr) {
-    printErrorFooter(guess);
-  }
+  printErrorFooter(guess);
 
-  fprintf(file, "\n");
+  print_error("\n");
 
-  if (file == stderr) {
-    printCallStackOnError();
-  }
+  printCallStackOnError();
 
   if (!err_user && !developer) {
     return;
@@ -561,6 +674,7 @@ static void vhandleError(FILE*          file,
     if (ignore_errors_for_pass) {
       exit_end_of_pass = true;
     } else if (!ignore_errors && !(ignore_user_errors && err_user)) {
+      printInstantiationNoteForLastError();
       clean_exit(1);
     }
   }
@@ -568,6 +682,8 @@ static void vhandleError(FILE*          file,
 
 
 void exitIfFatalErrorsEncountered() {
+  printInstantiationNoteForLastError();
+
   if (exit_eventually) {
     if (ignore_errors_for_pass) {
       exit_end_of_pass = true;
@@ -586,6 +702,14 @@ void considerExitingEndOfPass() {
   }
 }
 
+bool fatalErrorsEncountered() {
+  return exit_eventually || exit_end_of_pass;
+}
+
+void clearFatalErrors() {
+  exit_eventually = false;
+  exit_end_of_pass = false;
+}
 
 static void handleInterrupt(int sig) {
   stopCatchingSignals();

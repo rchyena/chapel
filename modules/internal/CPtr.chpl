@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -25,8 +25,9 @@
    See also :ref:`readme-extern`.
  */
 module CPtr {
-  use ChapelStandard;
-  private use SysBasic, SysError;
+  private use ChapelStandard;
+  private use SysBasic, SysError, SysCTypes;
+  private use HaltWrappers only;
 
   /* A Chapel version of a C NULL pointer. */
   inline proc c_nil:c_void_ptr {
@@ -89,10 +90,12 @@ module CPtr {
       return __primitive("array_get", this, 0);
     }
     /* Print this pointer */
-    inline proc writeThis(ch) {
+    inline proc writeThis(ch) throws {
       (this:c_void_ptr).writeThis(ch);
     }
   }
+
+  private use IO;
 
   /*
   This class represents a C array with fixed size.  A variable of type c_array
@@ -146,8 +149,8 @@ module CPtr {
     inline proc ref this(i: integral) ref : eltType {
       if boundsChecking then
         if i < 0 || i >= size then
-          HaltWrappers.boundsCheckHalt("c array index out of bounds " + i +
-                                       "(indices are 0.." + (size-1) + ")");
+          HaltWrappers.boundsCheckHalt("c array index out of bounds " + i:string +
+                                       "(indices are 0.." + (size-1):string + ")");
 
       return __primitive("array_get", this, i);
     }
@@ -155,8 +158,8 @@ module CPtr {
     inline proc const ref this(i: integral) const ref : eltType {
       if boundsChecking then
         if i < 0 || i >= size then
-          HaltWrappers.boundsCheckHalt("c array index out of bounds " + i +
-                                       "(indices are 0.." + (size-1) + ")");
+          HaltWrappers.boundsCheckHalt("c array index out of bounds " + i:string +
+                                       "(indices are 0.." + (size-1):string + ")");
 
       return __primitive("array_get", this, i);
     }
@@ -166,23 +169,23 @@ module CPtr {
     */
     inline proc ref this(param i: integral) ref : eltType {
       if i < 0 || i >= size then
-        compilerError("c array index out of bounds " + i +
-                      "(indices are 0.." + (size-1) + ")");
+        compilerError("c array index out of bounds " + i:string +
+                      "(indices are 0.." + (size-1):string + ")");
 
       return __primitive("array_get", this, i);
     }
     pragma "no doc"
     inline proc const ref this(param i: integral) const ref : eltType {
       if i < 0 || i >= size then
-        compilerError("c array index out of bounds " + i +
-                      "(indices are 0.." + (size-1) + ")");
+        compilerError("c array index out of bounds " + i:string +
+                      "(indices are 0.." + (size-1):string + ")");
 
       return __primitive("array_get", this, i);
     }
 
 
     /* Print the elements */
-    proc writeThis(ch) {
+    proc writeThis(ch) throws {
       ch <~> new ioLiteral("[");
       var first = true;
       for i in 0..#size {
@@ -247,24 +250,11 @@ module CPtr {
   inline proc =(ref a: c_ptr, b: c_void_ptr) { __primitive("=", a, b); }
 
   pragma "no doc"
-  inline proc =(ref a:c_ptr, b:_nilType) { __primitive("=", a, c_nil); }
-
-  pragma "no doc"
-  inline proc _cast(type t:c_ptr, x:_nilType) {
-    return __primitive("cast", t, x);
-  }
-  pragma "no doc"
-  inline proc _cast(type t:c_void_ptr, x:_nilType) {
-    return __primitive("cast", c_void_ptr, nil);
-  }
-  pragma "no doc"
-  inline proc _cast(type t:c_fn_ptr, x:_nilType) {
-    return __primitive("cast", c_fn_ptr, nil);
-  }
-  pragma "no doc"
   inline proc _cast(type t:c_void_ptr, x:c_fn_ptr) {
     return __primitive("cast", c_void_ptr, x);
   }
+
+  // Note: we rely from nil to pointer types for ptr = nil, nil:ptr cases
 
   pragma "no doc"
   inline proc _cast(type t:c_ptr, x:c_ptr) {
@@ -288,20 +278,38 @@ module CPtr {
   }
   pragma "no doc"
   inline proc _cast(type t:string, x:c_void_ptr) {
-    return new string(__primitive("ref to string", x), needToCopy=false);
+    try! {
+      return createStringWithOwnedBuffer(__primitive("ref to string", x));
+    }
   }
   pragma "no doc"
   inline proc _cast(type t:string, x:c_ptr) {
-    return new string(__primitive("ref to string", x), needToCopy=false);
+    try! {
+      return createStringWithOwnedBuffer(__primitive("ref to string", x));
+    }
   }
+  pragma "last resort"
   pragma "no doc"
-  inline proc _cast(type t:borrowed, x:c_void_ptr) {
+  inline proc _cast(type t:_anyManagementAnyNilable, x:c_void_ptr) {
+    if isUnmanagedClass(t) || isBorrowedClass(t) {
+      compilerWarning("cast from c_void_ptr to "+ t:string +" is deprecated");
+      compilerWarning("cast to "+ _to_nilable(t):string +" instead");
+      return __primitive("cast", t, x);
+    } else {
+      compilerWarning("invalid cast from c_void_ptr to managed type " +
+                      t:string);
+    }
+  }
+
+  pragma "no doc"
+  inline proc _cast(type t:unmanaged class?, x:c_void_ptr) {
     return __primitive("cast", t, x);
   }
   pragma "no doc"
-  inline proc _cast(type t:unmanaged, x:c_void_ptr) {
+  inline proc _cast(type t:borrowed class?, x:c_void_ptr) {
     return __primitive("cast", t, x);
   }
+
   pragma "no doc"
   inline proc _cast(type t:c_void_ptr, x:borrowed) {
     return __primitive("cast", t, x);
@@ -350,10 +358,6 @@ module CPtr {
   inline proc _cast(type t:uint(64), x:c_ptr) where c_uintptr != int(64)
     return __primitive("cast", t, x);
 
-
-  pragma "no doc"
-  inline proc =(ref a:c_fn_ptr, b:_nilType) { __primitive("=", a, c_nil); }
-
   pragma "no doc"
   inline proc =(ref a:c_fn_ptr, b:c_fn_ptr) { __primitive("=", a, b); }
 
@@ -363,6 +367,7 @@ module CPtr {
   inline proc ==(a: c_ptr, b: c_ptr) where a.eltType == b.eltType {
     return __primitive("ptr_eq", a, b);
   }
+
   pragma "no doc"
   inline proc ==(a: c_ptr, b: c_void_ptr) {
     return __primitive("ptr_eq", a, b);
@@ -371,22 +376,8 @@ module CPtr {
   inline proc ==(a: c_void_ptr, b: c_ptr) {
     return __primitive("ptr_eq", a, b);
   }
-  pragma "no doc"
-  inline proc ==(a: c_ptr, b: _nilType) {
-    return __primitive("ptr_eq", a, c_nil);
-  }
-  pragma "no doc"
-  inline proc ==(a: _nilType, b: c_ptr) {
-    return __primitive("ptr_eq", c_nil, b);
-  }
-  pragma "no doc"
-  inline proc ==(a: c_void_ptr, b: _nilType) {
-    return __primitive("ptr_eq", a, c_nil);
-  }
-  pragma "no doc"
-  inline proc ==(a: _nilType, b: c_void_ptr) {
-    return __primitive("ptr_eq", c_nil, b);
-  }
+  // Don't need _nilType versions -
+  // Rely on coercions from nil to c_ptr / c_void_ptr
 
   pragma "no doc"
   inline proc !=(a: c_ptr, b: c_ptr) where a.eltType == b.eltType {
@@ -399,22 +390,6 @@ module CPtr {
   pragma "no doc"
   inline proc !=(a: c_void_ptr, b: c_ptr) {
     return __primitive("ptr_neq", a, b);
-  }
-  pragma "no doc"
-  inline proc !=(a: c_ptr, b: _nilType) {
-    return __primitive("ptr_neq", a, c_nil);
-  }
-  pragma "no doc"
-  inline proc !=(a: _nilType, b: c_ptr) {
-    return __primitive("ptr_neq", c_nil, b);
-  }
-  pragma "no doc"
-  inline proc !=(a: c_void_ptr, b: _nilType) {
-    return __primitive("ptr_neq", a, c_nil);
-  }
-  pragma "no doc"
-  inline proc !=(a: _nilType, b: c_void_ptr) {
-    return __primitive("ptr_neq", c_nil, b);
   }
 
   pragma "no doc"
@@ -494,7 +469,6 @@ module CPtr {
     compilerError("Can't call a C function pointer within Chapel");
   }
 
-
   // Offset the CHPL_RT_MD constant in order to preserve the value through
   // calls to chpl_here_alloc. See comments on offset_STR_* in String.chpl
   // for more.
@@ -539,6 +513,8 @@ module CPtr {
    */
   proc c_offsetof(type t, param fieldname : string): size_t where isRecordType(t) {
     use Reflection;
+    pragma "no auto destroy"
+    pragma "no init"
     var x: t;
 
     return c_ptrTo(getFieldRef(x, fieldname)):size_t - c_ptrTo(x):size_t;
@@ -575,6 +551,47 @@ module CPtr {
   inline proc c_malloc(type eltType, size: integral) : c_ptr(eltType) {
     const alloc_size = size.safeCast(size_t) * c_sizeof(eltType);
     return chpl_here_alloc(alloc_size, offset_ARRAY_ELEMENTS):c_ptr(eltType);
+  }
+
+  /*
+    Allocate aligned memory that is not initialized. This memory
+    should be eventually freed with :proc:`c_free`.
+
+    This function is intended to behave similarly to the C17
+    function aligned_alloc.
+
+    :arg eltType: the type of the elements to allocate
+    :arg alignment: the memory alignment of the allocation
+                    which must be a power of two and a multiple
+                    of ``c_sizeof(c_void_ptr)``.
+    :arg size: the number of elements to allocate space for
+    :returns: a ``c_ptr(eltType)`` to allocated memory
+    */
+  inline proc c_aligned_alloc(type eltType,
+                              alignment : integral,
+                              size: integral) : c_ptr(eltType) {
+    // check alignment, size restriction
+    if boundsChecking {
+      var one:size_t = 1;
+      // Round the alignment up to the nearest power of 2
+      var aln = alignment.safeCast(size_t);
+      if aln == 0 then
+        halt("c_aligned_alloc called with alignment of 0");
+      var p = log2(aln); // power of 2 rounded down
+      // compute alignment rounded up
+      if (one << p) < aln then
+        p += 1;
+      assert(aln <= (one << p));
+      if aln != (one << p) then
+        halt("c_aligned_alloc called with non-power-of-2 alignment ", aln);
+      if alignment < c_sizeof(c_void_ptr) then
+        halt("c_aligned_alloc called with alignment smaller than pointer size");
+    }
+
+    const alloc_size = size.safeCast(size_t) * c_sizeof(eltType);
+    return chpl_here_aligned_alloc(alignment.safeCast(size_t),
+                                   alloc_size,
+                                   offset_ARRAY_ELEMENTS):c_ptr(eltType);
   }
 
   /* Free memory that was allocated with :proc:`c_calloc` or :proc:`c_malloc`.
@@ -662,5 +679,4 @@ module CPtr {
     memset(s, c.safeCast(c_int), n.safeCast(size_t));
     return s;
   }
-
 }

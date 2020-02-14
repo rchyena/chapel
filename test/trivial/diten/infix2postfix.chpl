@@ -11,10 +11,10 @@ config const infix = "3*((1+3-2)/4)+7";
 record Stack {
   class node {
     var element: string;
-    var next: unmanaged node;
+    var next: unmanaged node?;
   }
 
-  var head: unmanaged node;
+  var head: unmanaged node?;
   proc push(s: string) {
     if head == nil {
       head = new unmanaged node(s);
@@ -27,9 +27,9 @@ record Stack {
       return "";
     } else {
       var h = head;
-      var e = head.element;
+      var e = head!.element;
 
-      head = head.next;
+      head = head!.next;
 
       delete h;
 
@@ -40,7 +40,7 @@ record Stack {
     if head == nil then
       return "";
     else
-      return head.element;
+      return head!.element;
   }
 }
 

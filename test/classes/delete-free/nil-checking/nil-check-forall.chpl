@@ -14,7 +14,7 @@ proc badNilInForallLoop() {
   forall i in 1..n with (ref x) {
     // yes this is a race condition
     x = nil;
-    x.method();
+    x!.method();
   }
 }
 badNilInForallLoop();
@@ -24,7 +24,7 @@ proc badNilInCoforallLoop() {
   coforall i in 1..n with (ref x) {
     // yes this is a race condition
     x = nil;
-    x.method();
+    x!.method();
   }
 }
 badNilInCoforallLoop();
@@ -32,8 +32,8 @@ badNilInCoforallLoop();
 
 proc badNilInForallLoop2() {
   forall i in 1..n {
-    var x:owned MyClass;
-    x.method();
+    var x:owned MyClass?;
+    x!.method();
   }
 }
 badNilInForallLoop2();

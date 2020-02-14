@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -23,12 +23,16 @@
 #include "baseAST.h"
 #include "vec.h"
 
+#include <map>
 #include <vector>
 
 class ArgSymbol;
 class CallInfo;
 class FnSymbol;
 class Symbol;
+
+extern std::map<Type*,std::map<Type*,bool>*> actualFormalCoercible;
+void clearCoercibleCache(void);
 
 typedef enum {
   // These are in order of severity, for failedCandidateIsBetterMatch.
@@ -44,6 +48,9 @@ typedef enum {
 
   // Where clause does not match
   RESOLUTION_CANDIDATE_WHERE_FAILED,
+
+  // Implicit where clause does not match
+  RESOLUTION_CANDIDATE_IMPLICIT_WHERE_FAILED,
 
   // Types do not match and are in different categories
   RESOLUTION_CANDIDATE_UNRELATED_TYPE,
@@ -74,42 +81,44 @@ typedef enum {
 
 class ResolutionCandidate {
 public:
-                            ResolutionCandidate(FnSymbol* fn);
+                          ResolutionCandidate(FnSymbol* fn);
 
-  bool                      isApplicable(CallInfo& info);
+  bool                    isApplicable(CallInfo& info);
 
-  FnSymbol*                 fn;
-  std::vector<Symbol*>      formalIdxToActual;
-  std::vector<ArgSymbol*>   actualIdxToFormal;
+  FnSymbol*               fn;
+  std::vector<Symbol*>    formalIdxToActual;
+  std::vector<ArgSymbol*> actualIdxToFormal;
 
-  Symbol*                   failingArgument; // actual or formal
+  Symbol*                 failingArgument; // actual or formal
   ResolutionCandidateFailureReason reason;
 
 private:
-                            ResolutionCandidate();
+                          ResolutionCandidate();
 
-  bool                      isApplicableConcrete(CallInfo& info);
+  bool                    isApplicableConcrete(CallInfo& info);
 
-  bool                      isApplicableGeneric(CallInfo& info);
+  bool                    isApplicableGeneric(CallInfo& info);
 
-  bool                      computeAlignment(CallInfo& info);
+  bool                    computeAlignment(CallInfo& info);
 
-  int                       computeSubstitutions();
+  bool                    computeSubstitutions(Expr* ctx);
 
-  bool                      verifyGenericFormal(ArgSymbol* formal)       const;
+  bool                    verifyGenericFormal(ArgSymbol* formal)       const;
 
-  void                      computeSubstitution(ArgSymbol* formal,
-                                                Symbol*    actual);
+  void                    computeSubstitution(ArgSymbol* formal,
+                                              Symbol*    actual,
+                                              Expr*      ctx);
 
-  void                      computeSubstitution(ArgSymbol* formal);
+  void                    computeSubstitutionForDefaultExpr(ArgSymbol* formal,
+                                                            Expr*      ctx);
 
-  void                      resolveTypedefedArgTypes();
+  void                    resolveTypedefedArgTypes();
 
-  bool                      checkResolveFormalsWhereClauses(CallInfo& info);
+  bool                    checkResolveFormalsWhereClauses(CallInfo& info);
 
-  bool                      checkGenericFormals();
+  bool                    checkGenericFormals(Expr* ctx);
 
-  SymbolMap                 substitutions;
+  SymbolMap               substitutions;
 };
 
 

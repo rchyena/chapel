@@ -1,2 +1,2 @@
-../UnitTest.chpl:402: In function 'assertGreaterThan':
-../UnitTest.chpl:403: error: parallel iteration is not supported over unbounded ranges
+AssertionError: assert failed - First element is of type range(int(64),boundedHigh,false) and Second is of type range(int(64),boundedHigh,false)
+================================================================================

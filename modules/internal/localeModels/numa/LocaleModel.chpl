@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -30,6 +30,8 @@ module LocaleModel {
 
   use LocaleModelHelpNUMA;
   use LocaleModelHelpMem;
+
+  private use IO;
 
   //
   // The task layer calls these to convert between full sublocales and
@@ -69,10 +71,10 @@ module LocaleModel {
     proc init(_sid, _parent) {
       super.init(_parent);
       sid = _sid;
-      ndName = "ND"+sid;
+      ndName = "ND"+sid:string;
     }
 
-    override proc writeThis(f) {
+    override proc writeThis(f) throws {
       if parent then
         parent!.writeThis(f);
       f <~> '.'+ndName;
@@ -95,7 +97,6 @@ module LocaleModel {
 
     iter getChildren() : locale {
       halt("No children to iterate over.");
-      yield nil;
     }
   }
 
@@ -111,7 +112,7 @@ module LocaleModel {
 
     var numSublocales: int; // should never be modified after first assignment
     var childSpace: domain(1);
-    var childLocales: [childSpace] NumaDomain;
+    var childLocales: [childSpace] unmanaged NumaDomain;
 
     // This constructor must be invoked "on" the node
     // that it is intended to represent.  This trick is used
@@ -198,13 +199,13 @@ module LocaleModel {
     //- Implementation (private)
     //-
     proc setup() {
-      helpSetupLocaleNUMA(this, local_name, numSublocales);
+      helpSetupLocaleNUMA(this, local_name, numSublocales, NumaDomain);
     }
     //------------------------------------------------------------------------}
 
     proc deinit() {
       for loc in childLocales do
-        delete _to_unmanaged(loc);
+        delete loc;
     }
  }
 
@@ -247,7 +248,7 @@ module LocaleModel {
     override proc chpl_name() return local_name();
     proc local_name() return "rootLocale";
 
-    override proc writeThis(f) {
+    override proc writeThis(f) throws {
       f <~> name;
     }
 

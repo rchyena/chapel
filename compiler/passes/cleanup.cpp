@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -34,6 +34,7 @@
 #include "stmt.h"
 #include "stringutil.h"
 #include "symbol.h"
+#include "wellknown.h"
 
 static void cleanup(ModuleSymbol* module);
 
@@ -41,7 +42,9 @@ static void normalizeNestedFunctionExpressions(FnSymbol* fn);
 
 static void destructureTupleAssignment(CallExpr* call);
 
-static void replaceIsSubtypeWithPrimitive(CallExpr* call, bool proper);
+static void replaceIsSubtypeWithPrimitive(CallExpr* call,
+                                          bool proper, bool coerce);
+static void addIntentRefMaybeConst(ArgSymbol* arg);
 
 static void flattenPrimaryMethod(TypeSymbol* ts, FnSymbol* fn);
 
@@ -95,9 +98,11 @@ static void cleanup(ModuleSymbol* module) {
       if (call->isNamed("_build_tuple"))
         destructureTupleAssignment(call);
       else if (call->isNamed("isSubtype"))
-        replaceIsSubtypeWithPrimitive(call, false);
+        replaceIsSubtypeWithPrimitive(call, false, false);
       else if (call->isNamed("isProperSubtype"))
-        replaceIsSubtypeWithPrimitive(call, true);
+        replaceIsSubtypeWithPrimitive(call, true, false);
+      else if (call->isNamed("isCoercible"))
+        replaceIsSubtypeWithPrimitive(call, false, true);
 
     } else if (DefExpr* def = toDefExpr(ast)) {
       if (FnSymbol* fn = toFnSymbol(def->sym)) {
@@ -111,6 +116,29 @@ static void cleanup(ModuleSymbol* module) {
       }
     } else if (CatchStmt* catchStmt = toCatchStmt(ast)) {
       catchStmt->cleanup();
+    } else if (ArgSymbol* arg = toArgSymbol(ast)) {
+      addIntentRefMaybeConst(arg);
+    }
+  }
+
+  if (module == stringLiteralModule && !fMinimalModules) {
+    // Fix calls to chpl_createStringWithLiteral to use resolved expression.
+    // For compiler performance reasons, we'd like to have new_StringSymbol
+    // emit calls to a resolved function; however new_StringSymbol might
+    // run before that function is parsed. So fix up any literals created
+    // during parsing here.
+    INT_ASSERT(gChplCreateStringWithLiteral != NULL);
+    const char* name = gChplCreateStringWithLiteral->name;
+
+    for_vector(BaseAST, ast, asts) {
+      if (CallExpr* call = toCallExpr(ast)) {
+        if (UnresolvedSymExpr* urse = toUnresolvedSymExpr(call->baseExpr)) {
+          if (urse->unresolved == name) {
+            SET_LINENO(urse);
+            urse->replace(new SymExpr(gChplCreateStringWithLiteral));
+          }
+        }
+      }
     }
   }
 }
@@ -175,7 +203,7 @@ static void destructureTupleAssignment(CallExpr* call) {
   CallExpr* parent = toCallExpr(call->parentExpr);
 
   if (parent               != NULL &&
-      parent->isNamedAstr(astrSequals) &&
+      parent->isNamedAstr(astrSassign) &&
       parent->get(1)       == call) {
     VarSymbol* rtmp = newTemp();
     Expr*      S1   = new CallExpr(PRIM_MOVE, rtmp, parent->get(2)->remove());
@@ -197,14 +225,25 @@ static void destructureTupleAssignment(CallExpr* call) {
 }
 
 
-static void replaceIsSubtypeWithPrimitive(CallExpr* call, bool proper) {
+static void replaceIsSubtypeWithPrimitive(CallExpr* call,
+                                          bool proper, bool coerce) {
   Expr* sub = call->get(1);
   Expr* sup = call->get(2);
   sub->remove();
   sup->remove();
 
   PrimitiveTag prim = proper ? PRIM_IS_PROPER_SUBTYPE : PRIM_IS_SUBTYPE;
+  if (coerce)
+    prim = PRIM_IS_COERCIBLE;
+
   call->replace(new CallExpr(prim, sup, sub));
+}
+
+
+static void addIntentRefMaybeConst(ArgSymbol* arg) {
+  if (arg->hasFlag(FLAG_INTENT_REF_MAYBE_CONST_FORMAL)) {
+    arg->intent = INTENT_REF_MAYBE_CONST;
+  }
 }
 
 //

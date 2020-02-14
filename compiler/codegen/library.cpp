@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -39,8 +39,6 @@ std::map<TypeSymbol*, std::pair<std::string, std::string> > pythonNames;
 std::map<TypeSymbol*, std::string> fortranKindNames;
 std::map<TypeSymbol*, std::string> fortranTypeNames;
 
-static bool isFunctionToSkip(FnSymbol* fn);
-
 //
 // Generates a .h file to complement the library file created using --library
 // This .h file will contain necessary #includes, any explicitly exported
@@ -74,13 +72,20 @@ void codegen_library_header(std::vector<FnSymbol*> functions) {
         }
       }
 
+      if (fMultiLocaleInterop) {
+        // If we've created a multilocale library, memory that is returned to
+        // the client code wasn't created by chpl_mem_alloc and friends, so
+        // shouldn't be freed using the normal strategies.  But, for
+        // convenience, allow the user to still call `chpl_free`.
+        fprintf(libhdrfile.fptr, "#define chpl_free(ptr) free(ptr)\n");
+      }
       // Maybe need something here to support LLVM extern blocks?
 
       // Print out the module initialization function headers and the exported
       // functions
       for_vector(FnSymbol, fn, functions) {
         if (fn->hasFlag(FLAG_EXPORT) &&
-            !isFunctionToSkip(fn)) {
+            isUserRoutine(fn)) {
           fn->codegenPrototype();
         }
       }
@@ -247,15 +252,12 @@ static void printMakefileLibraries(fileinfo makefile, std::string name) {
     fprintf(makefile.fptr, "%s", requires.c_str());
   }
 
-  if (!llvmCodegen) {
-    fprintf(makefile.fptr, " %s\n", libraries.c_str());
-  } else {
-    // LLVM requires a bit more work to make the GNU linker happy.
-    removeTrailingNewlines(libraries);
-
-    // Append the Chapel library as the last linker argument.
-    fprintf(makefile.fptr, " %s %s\n\n", libraries.c_str(), libname.c_str());
-  }
+  //
+  // Append the Chapel library as the last linker argument. We do this as a
+  // stopgap to make the GNU linker happy.
+  //
+  removeTrailingNewlines(libraries);
+  fprintf(makefile.fptr, " %s %s\n\n", libraries.c_str(), libname.c_str());
 }
 
 const char* getLibraryExtension() {
@@ -440,7 +442,7 @@ void makeFortranModule(std::vector<FnSymbol*> functions) {
     indent += 2;
     // generate chpl_library_init and chpl_library_finalize here?
     for_vector(FnSymbol, fn, functions) {
-      if (!isFunctionToSkip(fn)) {
+      if (isUserRoutine(fn)) {
         fn->codegenFortran(indent);
       }
     }
@@ -474,7 +476,7 @@ static void makePXDFile(std::vector<FnSymbol*> functions) {
     fprintf(pxd.fptr, "cdef extern from \"%s.h\":\n", libmodeHeadername);
 
     for_vector(FnSymbol, fn, functions) {
-      if (!isFunctionToSkip(fn)) {
+      if (isUserRoutine(fn)) {
         fn->codegenPython(C_PXD);
       }
     }
@@ -507,8 +509,10 @@ static void makePYXFile(std::vector<FnSymbol*> functions) {
     fprintf(pyx.fptr, "from chplrt cimport chpl_library_init, ");
     fprintf(pyx.fptr, "chpl_library_finalize, chpl_external_array, ");
     fprintf(pyx.fptr, "chpl_make_external_array, chpl_make_external_array_ptr");
-    fprintf(pyx.fptr, ", chpl_free_external_array, chpl_opaque_array,");
-    fprintf(pyx.fptr, " cleanupOpaqueArray\n");
+    fprintf(pyx.fptr, ", chpl_free_external_array, chpl_opaque_array, ");
+    fprintf(pyx.fptr, "cleanupOpaqueArray, chpl_free, ");
+    fprintf(pyx.fptr, "chpl_byte_buffer, chpl_byte_buffer_free, ");
+    fprintf(pyx.fptr, "PyBytes_FromStringAndSize\n");
 
     std::vector<FnSymbol*> moduleInits;
     std::vector<FnSymbol*> exported;
@@ -517,7 +521,7 @@ static void makePYXFile(std::vector<FnSymbol*> functions) {
     bool first = true;
     // Make import statement at top of .pyx file for exported functions
     for_vector(FnSymbol, fn, functions) {
-      if (!isFunctionToSkip(fn)) {
+      if (isUserRoutine(fn)) {
         if (fn->hasFlag(FLAG_EXPORT)) {
           if (first) {
             first = false;
@@ -665,6 +669,14 @@ static void makePYFile() {
       fprintf(py.fptr, "\"%s\"", libName);
     }
     std::string libraries = getCompilelineOption("libraries");
+
+    // Erase trailing newline and append multilocale-only dependencies.
+    if (fMultiLocaleInterop) {
+      libraries.erase(libraries.length() - 1);
+      libraries += " ";
+      libraries += getCompilelineOption("multilocale-lib-deps");
+    }
+
     char copyOfLib[libraries.length() + 1];
     libraries.copy(copyOfLib, libraries.length(), 0);
     copyOfLib[libraries.length()] = '\0';
@@ -683,6 +695,8 @@ static void makePYFile() {
       }
       curSection = strtok(NULL, " \n");
     }
+
+    // Fetch addition
     fprintf(py.fptr, "]\n");
 
     // Cythonize me, Captain!
@@ -691,8 +705,9 @@ static void makePYFile() {
     fprintf(py.fptr, "\t\tExtension(\"%s\",\n", pythonModulename);
     fprintf(py.fptr, "\t\t\tinclude_dirs=[numpy.get_include()],\n");
     fprintf(py.fptr, "\t\t\tsources=[\"%s.pyx\"],\n", pythonModulename);
-    fprintf(py.fptr, "\t\t\tlibraries=[\"%s\"] + chpl_libraries)))\n",
-            libname.c_str());
+    fprintf(py.fptr, "\t\t\tlibraries=[\"%s\"] + chpl_libraries + "
+                     "[\"%s\"])))\n",
+                     libname.c_str(), libname.c_str());
 
     gGenInfo->cfile = save_cfile;
   }
@@ -750,6 +765,15 @@ void codegen_make_python_module() {
   // Erase the trailing \n from getting the libraries
   libraries.erase(libraries.length() - 1);
 
+  // Snag extra dependencies for multilocale libraries if needed.
+  if (fMultiLocaleInterop) {
+    std::string cmd = "$CHPL_HOME/util/config/compileline";
+    cmd += " --multilocale-lib-deps";
+    libraries += " ";
+    libraries += runCommand(cmd);
+    libraries.erase(libraries.length() - 1);
+  }
+
   std::string name = "-l";
   int libLength = strlen("lib");
   bool startsWithLib = strncmp(executableFilename, "lib", libLength) == 0;
@@ -772,10 +796,8 @@ void codegen_make_python_module() {
   fullCythonCall += "\" LDFLAGS=\"-L. " + name + requireLibraries;
   fullCythonCall += " " + libraries;
 
-  // We might be using the GNU linker, in which case we need to do this.
-  if (llvmCodegen) {
-    fullCythonCall += " " + name;
-  }
+  // Append library as last link argument to appease GNU linker.
+  fullCythonCall += " " + name;
 
   fullCythonCall +=  "\" " + cythonPortion;
 
@@ -788,8 +810,8 @@ void codegen_make_python_module() {
 
 // Skip this function if it is defined in an internal module, or if it is
 // the generated main function
-static bool isFunctionToSkip(FnSymbol* fn) {
-  return fn->getModule()->modTag == MOD_INTERNAL ||
-         fn->getModule()->modTag == MOD_STANDARD ||
-         fn->hasFlag(FLAG_GEN_MAIN_FUNC);
+bool isUserRoutine(FnSymbol* fn) {
+  return !(fn->getModule()->modTag == MOD_INTERNAL ||
+           fn->getModule()->modTag == MOD_STANDARD ||
+           fn->hasFlag(FLAG_GEN_MAIN_FUNC));
 }

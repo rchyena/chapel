@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -134,6 +134,14 @@ static Vec<const char*> sModNameSet;
 static Vec<const char*> sModNameList;
 static Vec<const char*> sModDoneSet;
 static Vec<UseStmt*>    sModReqdByInt;
+
+void addInternalModulePath(const ArgumentDescription* desc, const char* newpath) {
+  sIntModPath.add(astr(newpath));
+}
+
+void addStandardModulePath(const ArgumentDescription* desc, const char* newpath) {
+  sStdModPath.add(astr(newpath));
+}
 
 void setupModulePaths() {
   const char* modulesRoot = NULL;
@@ -497,11 +505,41 @@ static ModuleSymbol* parseMod(const char* modName, bool isInternal) {
 static bool containsOnlyModules(BlockStmt* block, const char* path);
 static void addModuleToDoneList(ModuleSymbol* module);
 
+//
+// This is a check to see whether we've already parsed this file
+// before to avoid re-parsing the same thing twice which can result in
+// defining its modules twice.
+//
+static bool haveAlreadyParsed(const char* path) {
+  static std::set<std::string> parsedPaths;
+
+  // normalize the path if possible via realpath() and use 'path' otherwise
+  const char* normpath = chplRealPath(path);
+  if (normpath == NULL) {
+    normpath = path;
+  }
+
+  // check whether we've seen this path before
+  if (parsedPaths.count(normpath) > 0) {
+    // if so, indicate it
+    return true;
+  } else {
+    // otherwise, add it to our set and list of paths
+    parsedPaths.insert(normpath);
+    return false;
+  }
+}
+
+
 static ModuleSymbol* parseFile(const char* path,
                                ModTag      modTag,
                                bool        namedOnCommandLine) {
   ModuleSymbol* retval = NULL;
 
+  // Make sure we haven't already parsed this file
+  if (haveAlreadyParsed(path)) {
+    return NULL;
+  }
 
   if (FILE* fp = openInputFile(path)) {
     gFilenameLookup.push_back(path);
@@ -643,6 +681,9 @@ static ModuleSymbol* parseFile(const char* path,
             "ParseFile: Unable to open \"%s\" for reading\n",
             path);
   }
+  if (retval && strcmp(retval->name, "IO") == 0) {
+    ioModule = retval;
+  }
 
   return retval;
 }
@@ -654,6 +695,7 @@ static bool containsOnlyModules(BlockStmt* block, const char* path) {
   bool          hasOther       = false;
   ModuleSymbol* lastModSym     =  NULL;
   BaseAST*      lastModSymStmt =  NULL;
+  BaseAST*      firstOtherStmt =  NULL;
 
   for_alist(stmt, block->body) {
     if (BlockStmt* block = toBlockStmt(stmt))
@@ -669,6 +711,8 @@ static bool containsOnlyModules(BlockStmt* block, const char* path) {
         moduleDefs++;
       } else {
         hasOther = true;
+        if (firstOtherStmt == NULL)
+          firstOtherStmt = stmt;
       }
 
     } else if (CallExpr* callexpr = toCallExpr(stmt)) {
@@ -676,6 +720,8 @@ static bool containsOnlyModules(BlockStmt* block, const char* path) {
         hasRequires = true;
       } else {
         hasOther = true;
+        if (firstOtherStmt == NULL)
+          firstOtherStmt = stmt;
       }
 
     } else if (isUseStmt(stmt)  == true) {
@@ -683,6 +729,8 @@ static bool containsOnlyModules(BlockStmt* block, const char* path) {
 
     } else {
       hasOther = true;
+      if (firstOtherStmt == NULL)
+        firstOtherStmt = stmt;
     }
   }
 
@@ -712,6 +760,14 @@ static bool containsOnlyModules(BlockStmt* block, const char* path) {
              lastModSym->name,
              stmtKind);
 
+  } else if (moduleDefs >= 1 && (hasUses || hasOther)) {
+    USR_WARN(firstOtherStmt,
+             "This file-scope code is outside of any "
+             "explicit module declarations (e.g., module %s), "
+             "so an implicit module named '%s' is being "
+             "introduced to contain the file's contents.",
+             lastModSym->name,
+             filenameToModulename(path));
   }
 
   return hasUses == false &&
@@ -845,9 +901,12 @@ static const char* searchThePath(const char*      modName,
 
       // 4/28/17 internal/ has an ambiguous duplicate for NetworkAtomicTypes
       } else if (isInternal == false) {
-        USR_WARN("Ambiguous module source file -- using %s over %s",
-                 cleanFilename(retval),
-                 cleanFilename(path));
+        // only generate these warnings if the two paths aren't the same
+        if (strcmp(chplRealPath(retval), chplRealPath(path)) != 0) {
+          USR_WARN("Ambiguous module source file -- using %s over %s",
+                   cleanFilename(retval),
+                   cleanFilename(path));
+        }
       }
     }
   }

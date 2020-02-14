@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -30,10 +30,14 @@ module LocaleModel {
 
   use LocaleModelHelpNUMA;
 
+  private use IO, SysCTypes;
+
   require "hbwmalloc.h", "-lmemkind";
 
   extern proc hbw_check_available():c_int;
   extern proc hbw_malloc(size:size_t):c_void_ptr;
+  extern proc hbw_posix_memalign(out memptr:c_void_ptr,
+                                 alignment:size_t, size:size_t):c_int;
   extern proc hbw_calloc(nmemb:size_t, size:size_t):c_void_ptr;
   extern proc hbw_realloc(ptr:c_void_ptr, size:size_t):c_void_ptr;
   extern proc hbw_free(ptr:c_void_ptr);
@@ -147,9 +151,9 @@ module LocaleModel {
   export
   proc chpl_localeModel_sublocToExecutionSubloc(full_subloc:chpl_sublocID_t)
   {
-    extern proc chpl_task_getNumSublocales(): int(32);
+    extern proc chpl_topo_getNumNumaDomains(): c_int;
     const (whichNuma, memoryKind) =
-      unpackSublocID(chpl_task_getNumSublocales(),
+      unpackSublocID(chpl_topo_getNumNumaDomains(),
                      full_subloc:chpl_sublocID_t);
     return whichNuma:chpl_sublocID_t;
   }
@@ -158,8 +162,8 @@ module LocaleModel {
   proc chpl_localeModel_sublocMerge(full_subloc:chpl_sublocID_t,
                            execution_subloc:chpl_sublocID_t): chpl_sublocID_t
   {
-    extern proc chpl_task_getNumSublocales(): int(32);
-    var nNumaDomains:int = chpl_task_getNumSublocales();
+    extern proc chpl_topo_getNumNumaDomains(): c_int;
+    var nNumaDomains:int = chpl_topo_getNumNumaDomains();
     var memoryKind:int;
     //
     // Strip the memory kind out of the full_subloc and attach it
@@ -177,9 +181,9 @@ module LocaleModel {
     const sid: chpl_sublocID_t;
     const mlName: string; // note: locale provides `proc name`
 
-    override proc chpl_id() return parent.chpl_id(); // top-level node id
+    override proc chpl_id() return parent!.chpl_id(); // top-level node id
     override proc chpl_localeid() {
-      return chpl_buildLocaleID(parent.chpl_id():chpl_nodeID_t, sid);
+      return chpl_buildLocaleID(parent!.chpl_id():chpl_nodeID_t, sid);
     }
     override proc chpl_name() return mlName;
 
@@ -188,47 +192,51 @@ module LocaleModel {
     // large, low latency, and high bandwidth
     //
     proc defaultMemory() : locale {
-      return parent.defaultMemory();
+      return parent!.defaultMemory();
     }
 
     proc largeMemory() : locale {
-      return parent.largeMemory();
+      return parent!.largeMemory();
     }
 
     proc lowLatencyMemory() : locale {
-      return parent.lowLatencyMemory();
+      return parent!.lowLatencyMemory();
     }
 
     proc highBandwidthMemory() : locale {
-      return parent.highBandwidthMemory();
+      return parent!.highBandwidthMemory();
     }
 
     proc init() {
     }
 
     proc init(_sid, _parent) {
-      extern proc chpl_task_getNumSublocales(): int(32);
+      extern proc chpl_topo_getNumNumaDomains(): c_int;
 
       super.init(_parent);
 
       sid = _sid: chpl_sublocID_t;
       const (whichNuma, kind) =
-        unpackSublocID(chpl_task_getNumSublocales(), sid);
+        unpackSublocID(chpl_topo_getNumNumaDomains(), sid);
       var kindstr:string;
       if kind == memoryKindDDR() then
         kindstr = "DDR";
       else if kind == memoryKindMCDRAM() then
         kindstr = "MCDRAM";
-      mlName = kindstr+whichNuma;
+      mlName = kindstr+whichNuma:string;
     }
 
-    override proc writeThis(f) {
-      parent.writeThis(f);
+    override proc writeThis(f) throws {
+      parent!.writeThis(f);
       f <~> '.'+mlName;
     }
 
     override proc getChildCount(): int { return 0; }
-    override proc getChild(idx:int) : locale { return nil; }
+
+    override proc getChild(idx:int) : locale {
+      halt("requesting a child from a MemoryLocale locale");
+      return new locale(); //dummy
+    }
   }
 
   //
@@ -237,12 +245,12 @@ module LocaleModel {
   class NumaDomain : AbstractLocaleModel {
     const sid : chpl_sublocID_t;
     const ndName : string; // note: locale provides `proc name`
-    var ddr : MemoryLocale; // should never be modified after first assignment
-    var hbm : MemoryLocale; // should never be modified after first assignment
+    var ddr : unmanaged MemoryLocale?; // should never be modified after first assignment
+    var hbm : unmanaged MemoryLocale?; // should never be modified after first assignment
 
-    override proc chpl_id() return parent.chpl_id(); // top-level node id
+    override proc chpl_id() return parent!.chpl_id(); // top-level node id
     override proc chpl_localeid() {
-      return chpl_buildLocaleID(parent.chpl_id():chpl_nodeID_t, sid);
+      return chpl_buildLocaleID(parent!.chpl_id():chpl_nodeID_t, sid);
     }
     override proc chpl_name() return ndName;
 
@@ -270,14 +278,14 @@ module LocaleModel {
     }
 
     proc init(_sid, _parent) {
-      extern proc chpl_task_getNumSublocales(): int(32);
-      var numSublocales = chpl_task_getNumSublocales();
+      extern proc chpl_topo_getNumNumaDomains(): c_int;
+      var numSublocales = chpl_topo_getNumNumaDomains();
 
       super.init(_parent);
 
       sid = packSublocID(numSublocales, _sid, defaultMemoryKind())
               : chpl_sublocID_t;
-      ndName = "ND"+_sid;
+      ndName = "ND"+_sid:string;
 
       this.complete();
 
@@ -300,12 +308,12 @@ module LocaleModel {
     }
 
     proc deinit() {
-      delete _to_unmanaged(ddr);
-      delete _to_unmanaged(hbm);
+      delete ddr;
+      delete hbm;
     }
 
-    override proc writeThis(f) {
-      parent.writeThis(f);
+    override proc writeThis(f) throws {
+      parent!.writeThis(f);
       f <~> '.'+ndName;
     }
 
@@ -315,11 +323,14 @@ module LocaleModel {
       yield -1;
     }
     proc addChild(loc:locale) { halt("Cannot add children to this locale type."); }
-    override proc getChild(idx:int) : locale { return nil; }
+
+    override proc getChild(idx:int) : locale {
+      halt("requesting a child from a NumaDomain locale");
+      return new locale(); //dummy
+    }
 
     iter getChildren() : locale {
       halt("No children to iterate over.");
-      yield nil;
     }
   }
 
@@ -332,12 +343,12 @@ module LocaleModel {
   class LocaleModel : AbstractLocaleModel {
     const _node_id : int;
     var local_name : string; // should never be modified after first assignment
-    var ddr : MemoryLocale; // should never be modified after first assignment
-    var hbm : MemoryLocale; // should never be modified after first assignment
+    var ddr : unmanaged MemoryLocale?; // should never be modified after first assignment
+    var hbm : unmanaged MemoryLocale?; // should never be modified after first assignment
 
     var numSublocales: int; // should never be modified after first assignment
     var childSpace: domain(1);
-    var childLocales: [childSpace] NumaDomain;
+    var childLocales: [childSpace] unmanaged NumaDomain;
 
     // This constructor must be invoked "on" the node
     // that it is intended to represent.  This trick is used
@@ -409,7 +420,7 @@ module LocaleModel {
         if (whichNuma < 0) || (whichNuma >= numSublocales) then
           halt("sublocale child index out of bounds (",idx,")");
       if memoryKind == memoryKindMCDRAM() then
-        return childLocales[whichNuma].hbm;
+        return childLocales[whichNuma].hbm!;
       else
         return childLocales[whichNuma];
     }
@@ -427,7 +438,7 @@ module LocaleModel {
     //- Implementation (private)
     //-
     proc setup() {
-      helpSetupLocaleNUMA(this, local_name, numSublocales);
+      helpSetupLocaleNUMA(this, local_name, numSublocales, NumaDomain);
 
       ddr = new unmanaged MemoryLocale(c_sublocid_any, this);
 
@@ -448,10 +459,7 @@ module LocaleModel {
     //------------------------------------------------------------------------}
 
     proc deinit() {
-      for loc in childLocales do
-        delete _to_unmanaged(loc);
-      delete _to_unmanaged(ddr);
-      delete _to_unmanaged(hbm);
+      delete childLocales, hbm, ddr;
     }
  }
 
@@ -494,7 +502,7 @@ module LocaleModel {
     override proc chpl_name() return local_name();
     proc local_name() return "rootLocale";
 
-    override proc writeThis(f) {
+    override proc writeThis(f) throws {
       f <~> name;
     }
 
@@ -517,16 +525,16 @@ module LocaleModel {
     override proc getDefaultLocaleSpace() const ref return this.myLocaleSpace;
     override proc getDefaultLocaleArray() const ref return myLocales;
 
-    override proc localeIDtoLocale(id : chpl_localeID_t) {
+    override proc localeIDtoLocale(id : chpl_localeID_t) : locale {
       const node = chpl_nodeFromLocaleID(id);
       const subloc = chpl_sublocFromLocaleID(id);
-      if subloc == numaDomainForAny(
-                    (myLocales[node:int]:LocaleModel?)!.numSublocales) then
-        return ((myLocales[node:int]:LocaleModel?)!.hbm):locale;
+      const nloc = (myLocales[node:int]:LocaleModel?)!;
+      if subloc == numaDomainForAny(nloc.numSublocales) then
+        return nloc.hbm!;
       else if chpl_isActualSublocID(subloc) then
-        return (myLocales[node:int].getChild(subloc:int)):locale;
+        return nloc.getChild(subloc:int);
       else
-        return (myLocales[node:int]):locale;
+        return nloc:locale;
     }
 
     proc deinit() {
@@ -549,15 +557,15 @@ module LocaleModel {
   //
   private inline
   proc allocatingInHbmSublocale(): bool {
-    extern proc chpl_task_getNumSublocales(): int(32);
-    return chpl_task_getRequestedSubloc() >= chpl_task_getNumSublocales();
+    extern proc chpl_topo_getNumNumaDomains(): c_int;
+    return chpl_task_getRequestedSubloc() >= chpl_topo_getNumNumaDomains();
   }
 
   private inline
   proc addrIsInHbm(addr:c_void_ptr): bool {
     extern proc chpl_topo_getMemLocality(p:c_void_ptr): chpl_sublocID_t;
-    extern proc chpl_task_getNumSublocales(): int(32);
-    return chpl_topo_getMemLocality(addr) >= chpl_task_getNumSublocales();
+    extern proc chpl_topo_getNumNumaDomains(): c_int;
+    return chpl_topo_getMemLocality(addr) >= chpl_topo_getNumNumaDomains();
   }
 
   export
@@ -570,9 +578,12 @@ module LocaleModel {
   // The allocator pragma is used by scalar replacement.
   pragma "allocator"
   pragma "locale model alloc"
+  pragma "always propagate line file info"
   proc chpl_here_alloc(size:int(64), md:chpl_mem_descInt_t): c_void_ptr {
+    pragma "fn synchronization free"
     pragma "insert line file info"
-      extern proc chpl_mem_alloc(size:size_t, md:chpl_mem_descInt_t) : c_void_ptr;
+    extern proc chpl_mem_alloc(size:size_t, md:chpl_mem_descInt_t) : c_void_ptr;
+
     if allocatingInHbmSublocale() then
       return hbw_malloc(size.safeCast(size_t));
     else
@@ -580,9 +591,11 @@ module LocaleModel {
   }
 
   pragma "allocator"
+  pragma "always propagate line file info"
   proc chpl_here_alloc(size:integral, md:chpl_mem_descInt_t): c_void_ptr {
+    pragma "fn synchronization free"
     pragma "insert line file info"
-      extern proc chpl_mem_alloc(size:size_t, md:chpl_mem_descInt_t) : c_void_ptr;
+    extern proc chpl_mem_alloc(size:size_t, md:chpl_mem_descInt_t) : c_void_ptr;
     if allocatingInHbmSublocale() then
       return hbw_malloc(size.safeCast(size_t));
     else
@@ -590,9 +603,35 @@ module LocaleModel {
   }
 
   pragma "allocator"
-  proc chpl_here_calloc(size:integral, number:int, md:chpl_mem_descInt_t): c_void_ptr {
+  pragma "always propagate line file info"
+  proc chpl_here_aligned_alloc(alignment:integral, size:integral, md:chpl_mem_descInt_t): c_void_ptr {
+    pragma "fn synchronization free"
     pragma "insert line file info"
-      extern proc chpl_mem_calloc(number:size_t, size:size_t, md:chpl_mem_descInt_t) : c_void_ptr;
+    extern proc chpl_mem_memalign(alignment:size_t, size:size_t, md:chpl_mem_descInt_t) : c_void_ptr;
+
+    if allocatingInHbmSublocale() {
+      var ptr:c_void_ptr = nil;
+      var rc = hbw_posix_memalign(ptr,
+                                  alignment.safeCast(size_t),
+                                  size.safeCast(size_t));
+      if rc != 0 then
+        halt("hbw_posix_memalign allocation call failed");
+      return ptr;
+    } else {
+      return chpl_mem_memalign(alignment.safeCast(size_t),
+                               size.safeCast(size_t),
+                               md + chpl_memhook_md_num());
+    }
+  }
+
+
+  pragma "allocator"
+  pragma "always propagate line file info"
+  proc chpl_here_calloc(size:integral, number:int, md:chpl_mem_descInt_t): c_void_ptr {
+    pragma "fn synchronization free"
+    pragma "insert line file info"
+    extern proc chpl_mem_calloc(number:size_t, size:size_t, md:chpl_mem_descInt_t) : c_void_ptr;
+
     if allocatingInHbmSublocale() then
       return hbw_calloc(number.safeCast(size_t), size.safeCast(size_t));
     else
@@ -600,9 +639,12 @@ module LocaleModel {
   }
 
   pragma "allocator"
+  pragma "always propagate line file info"
   proc chpl_here_realloc(ptr:c_void_ptr, size:integral, md:chpl_mem_descInt_t): c_void_ptr {
+    pragma "fn synchronization free"
     pragma "insert line file info"
-      extern proc chpl_mem_realloc(ptr:c_void_ptr, size:size_t, md:chpl_mem_descInt_t) : c_void_ptr;
+    extern proc chpl_mem_realloc(ptr:c_void_ptr, size:size_t, md:chpl_mem_descInt_t) : c_void_ptr;
+
     const useHbm = if ptr == nil
                    then allocatingInHbmSublocale()
                    else addrIsInHbm(ptr);
@@ -612,9 +654,12 @@ module LocaleModel {
       return chpl_mem_realloc(ptr, size.safeCast(size_t), md + chpl_memhook_md_num());
   }
 
+  pragma "always propagate line file info"
   proc chpl_here_good_alloc_size(min_size:integral): int {
+    pragma "fn synchronization free"
     pragma "insert line file info"
-      extern proc chpl_mem_good_alloc_size(min_size:size_t) : size_t;
+    extern proc chpl_mem_good_alloc_size(min_size:size_t) : size_t;
+
     // memkind doesn't seem to provide one of these, so we'll
     // just get the # from the default allocator and hope for the best.
     // That's not totally crazy since they both might use jemalloc.
@@ -622,11 +667,15 @@ module LocaleModel {
   }
 
   pragma "locale model free"
+  pragma "always propagate line file info"
   proc chpl_here_free(ptr:c_void_ptr): void {
     if ptr == nil then
       return;
+
+    pragma "fn synchronization free"
     pragma "insert line file info"
-      extern proc chpl_mem_free(ptr:c_void_ptr) : void;
+    extern proc chpl_mem_free(ptr:c_void_ptr) : void;
+
     if addrIsInHbm(ptr) then
       hbw_free(ptr);
     else

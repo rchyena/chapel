@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -28,8 +28,15 @@
 
 #include "chpltypes.h"
 
+// The type of task private data.
+#include "chpl-cache-task-decls.h"
+#define HAS_CHPL_CACHE_FNS
+
 typedef struct {
-  int dummy;    // structs must be nonempty
+  chpl_cache_taskPrvData_t cache_data;
+  int numTxnsOut;    // number of transactions outstanding
+  void* get_buff;
+  void* put_buff;
 } chpl_comm_taskPrvData_t;
 
 //
@@ -58,7 +65,7 @@ struct chpl_comm_bundleData_execOn_t {
   chpl_fn_int_t fid;            // function table index to call
   uint16_t argSize;             // #bytes in whole arg bundle
   c_sublocid_t subloc;          // target sublocale
-  chpl_comm_amDone_t* pDone;    // initiator's 'done' flag; nonblocking if NULL
+  chpl_comm_amDone_t* pAmDone;  // initiator's 'amDone' flag; NULL means nonblk
 };
 
 struct chpl_comm_bundleData_execOnLrg_t {
@@ -68,7 +75,7 @@ struct chpl_comm_bundleData_execOnLrg_t {
   void* arg;                    // address of arg, on initiator
   c_sublocid_t subloc;          // target sublocale
   chpl_comm_amDone_t gotArg;    // initiator's 'got large arg' flag
-  chpl_comm_amDone_t* pDone;    // initiator's 'done' flag; nonblocking if NULL
+  chpl_comm_amDone_t* pAmDone;  // initiator's 'amDone' flag; NULL means nonblk
 };
 
 struct chpl_comm_bundleData_RMA_t {
@@ -76,7 +83,7 @@ struct chpl_comm_bundleData_RMA_t {
   void* addr;                   // address on AM target node
   void* raddr;                  // address on AM initiator's node
   size_t size;                  // number of bytes
-  chpl_comm_amDone_t* pDone;    // initiator's 'done' flag; nonblocking if NULL
+  chpl_comm_amDone_t* pAmDone;  // initiator's 'amDone' flag; NULL means nonblk
 };
 
 typedef union {
@@ -98,7 +105,7 @@ struct chpl_comm_bundleData_AMO_t {
   chpl_amo_datum_t operand1;    // first operand, if needed
   chpl_amo_datum_t operand2;    // second operand, if needed
   void* result;                 // result address on initiator's node
-  chpl_comm_amDone_t* pDone;    // initiator's 'done' flag; nonblocking if NULL
+  chpl_comm_amDone_t* pAmDone;  // initiator's 'amDone' flag; NULL means nonblk
 };
 
 typedef union {

@@ -19,7 +19,7 @@ class Node {
   var name: string;
   var pos: unmanaged position = new unmanaged position(-1,-1);
   var color : colors = colors.WHITE;
-  var pred : unmanaged Node = nil;
+  var pred : unmanaged Node? = nil;
   var disc,fini : int = -1;
 
   proc writeThis(w){
@@ -400,7 +400,7 @@ class Graph {
 	 * From the non-treeEdges, we must find one with minimum slack
 	 */
 	var delta = 256;
-	var minEdge: unmanaged Edge = nil;
+	var minEdge: unmanaged Edge? = nil;
 	for e in incident_non_tree_edge() do {
 	    if(slack(e.id) < delta){
 	      delta = slack(e.id);
@@ -413,7 +413,7 @@ class Graph {
 
 	writeln("In Loop: delta = ",delta," edge to add = ",minEdge);
 	/* if the head is the incident node, then reverse the slack */
-	if (treeNodes(minEdge.src.id)) then delta = -delta;
+	if (treeNodes(minEdge!.src.id)) then delta = -delta;
 
 
 	/* Try to promote across treeNodes */
@@ -425,7 +425,7 @@ class Graph {
 	    writeln(e.src," @R[[",curRank(e.src.id),"]] --> ",e.dst,"@R[[",curRank(e.dst.id),"]] == ",slack(e.id));
 	  }
 	/* Try and tighten from the incident edge */
-	treeSize = tight_tree(minEdge.src.id);
+	treeSize = tight_tree(minEdge!.src.id);
       }
     writeln("Feasible tree computed!");
     //    init_cutvalues();
@@ -507,6 +507,8 @@ proc DFS(G){
 // This function reads a new graph returns
 //
 proc readGraph(filename) {
+  use IO;
+
   // Create and open  an input file with the specified filename in read (iomode.r) mode
   var infile = open(filename, iomode.r);
   var reader = infile.reader();

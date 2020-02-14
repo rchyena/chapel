@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  * 
  * The entirety of this work is licensed under the Apache License,
@@ -32,10 +32,12 @@
 // mapped to by the distribution.
 //
 
-use BlockDist;
-use DSIUtil;
-use ChapelUtil;
-use CommDiagnostics;
+private use BlockDist;
+private use DSIUtil;
+private use ChapelUtil;
+private use CommDiagnostics;
+private use ChapelLocks;
+private use ChapelDebugPrint;
 
 
 //
@@ -503,7 +505,7 @@ override proc Stencil.dsiNewRectangularDom(param rank: int, type idxType,
 //
 // output distribution
 //
-proc Stencil.writeThis(x) {
+proc Stencil.writeThis(x) throws {
   x <~> "Stencil\n";
   x <~> "-------\n";
   x <~> "distributes: " <~> boundingBox <~> "\n";
@@ -1084,11 +1086,6 @@ proc StencilArr.nonLocalAccess(i: rank*idxType) ref {
   if doRADOpt {
     if myLocArr {
       const myLocArr = this.myLocArr!; // indicate it is not nil
-      if boundsChecking {
-        if !dom.wholeFluff.contains(i) {
-          halt("array index out of bounds: ", i);
-        }
-      }
       var rlocIdx = dom.dist.targetLocsIdx(i);
       if !disableStencilLazyRAD {
         if myLocArr.locRAD == nil {
@@ -1149,6 +1146,9 @@ inline proc StencilArr.dsiAccess(i: idxType...rank) const ref
 where shouldReturnRvalueByConstRef(eltType)
   return dsiAccess(i);
 
+inline proc StencilArr.dsiBoundsCheck(i: rank*idxType) {
+  return dom.wholeFluff.contains(i);
+}
 
 iter StencilArr.these() ref {
   for i in dom do
@@ -1220,8 +1220,9 @@ iter StencilArr.these(param tag: iterKind, followThis, param fast: bool = false)
       arrSection = myLocArr!;
 
     local {
-      const narrowArrSection = __primitive("_wide_get_addr", arrSection):arrSection.type;
-      ref myElems = narrowArrSection.myElems;
+      const narrowArrSection =
+        __primitive("_wide_get_addr", arrSection):(arrSection.type?);
+      ref myElems = narrowArrSection!.myElems;
       for i in myFollowThisDom do yield myElems[i];
     }
   } else {

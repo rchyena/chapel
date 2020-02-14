@@ -1,6 +1,8 @@
 //Fasta Shootout
 //http://benchmarksgame.alioth.debian.org
 //Casey Battaglino
+use IO;
+
 config const LINE_LENGTH = 60;
 config const LOOKUP_SIZE = 4*1024;
 config const LOOKUP_SCALE : real = LOOKUP_SIZE - 1;
@@ -85,8 +87,8 @@ proc makeLookup(a :[?D]) {
 }
 
 // Add a line of random sequence
-proc addLine(bytes: int) {
-  for i in 0..bytes-1 {
+proc addLine(nBytes: int) {
+  for i in 0..nBytes-1 {
     var r  = random.next();
     var ai = r : int; 
     while (lookup[ai].p < r) {
@@ -103,9 +105,9 @@ proc randomMake(desc : string, a :[?D], n : int) {
   makeLookup(a);
   stdout.write(desc);
   while (len > 0) {
-    var bytes : int = min(LINE_LENGTH, len);
-    addLine(bytes);
-    len = len - bytes;
+    var nBytes : int = min(LINE_LENGTH, len);
+    addLine(nBytes);
+    len = len - nBytes;
   }
 }
 

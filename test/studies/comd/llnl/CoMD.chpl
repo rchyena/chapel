@@ -11,7 +11,7 @@ use VisualDebug;
 use rand;
 
 var vSim  : Validate;
-var f : unmanaged Force;
+var f : unmanaged Force?;
 
 proc initGrid(latticeConstant: real, const ref force: unmanaged Force) {
   simLow  = (0.0,0.0,0.0);
@@ -57,7 +57,7 @@ proc initGrid(latticeConstant: real, const ref force: unmanaged Force) {
       var MyDom = new unmanaged Domain(localDom=MyLocDom,
                          invBoxSize=invBoxSize, boxSpace=boxSpace, numBoxes=numBoxes,
                          domHigh=domHigh, domLow=domLow,
-                         force=if(replicateForce) then force.replicate() else force);
+                         force=if(replicateForce) then force.replicate()! else force);
 
       Grid[ijk] = MyDom;
 
@@ -470,7 +470,7 @@ tArray[timerEnum.REDIST].stop();
 
 proc computeForce() {
 tArray[timerEnum.FORCE].start();
-  if(replicateForce) then f.computeLocal(); else f.compute();
+  if(replicateForce) then f!.computeLocal(); else f!.compute();
 tArray[timerEnum.FORCE].stop();
 }
 
@@ -484,28 +484,28 @@ tArray[timerEnum.FCREATE].start();
   }
 tArray[timerEnum.FCREATE].stop();
 
-  f.print();
+  f!.print();
 
   writeln(); 
 
   var latticeConstant : real = lat;
-  if(lat < 0.0) then latticeConstant = f.lat;
+  if(lat < 0.0) then latticeConstant = f!.lat;
 
 tArray[timerEnum.INITGRID].start();
 if useChplVis then tagVdebug("initGrid");
-  initGrid(latticeConstant, f);
+  initGrid(latticeConstant, f!);
 if useChplVis then pauseVdebug();
 tArray[timerEnum.INITGRID].stop();
 
 tArray[timerEnum.EPILOGUE].start();
-  f.epilogue();
+  f!.epilogue();
 tArray[timerEnum.EPILOGUE].stop();
 
 if useChplVis then tagVdebug("createLattice");
   createFccLattice(latticeConstant);
 if useChplVis then pauseVdebug();
 
-  const cutoff = f.cutoff;
+  const cutoff = f!.cutoff;
 
   // delete original force object since it has been replicated on all domains
   // if(replicateForce) then delete force;

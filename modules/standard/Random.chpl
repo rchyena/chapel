@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -21,7 +21,7 @@
    Support for pseudorandom number generation
 
    This module defines an abstraction for a stream of pseudorandom numbers,
-   :class:`~RandomStreamInterface`. Use :proc:`makeRandomStream` to
+   :class:`~RandomStreamInterface`. Use :proc:`createRandomStream` to
    create such an stream. Each stream supports methods to get the next
    random number in the stream (:proc:`~RandomStreamInterface.getNext`),
    to fast-forward to a specific value in the stream
@@ -45,24 +45,12 @@
    distributed in [0.0, 1.0] with the caveat that it currently depends on the
    RNG whether the boundary values 0.0 and 1.0 can be produced.
 
-   Use :proc:`makeRandomStream` or the constructor for a specific RNG
+   Use :proc:`createRandomStream` or the constructor for a specific RNG
    implementation to get a RandomStream. See the documentation for
    each RNG implementation for more information:
 
      * :mod:`PCGRandom`
      * :mod:`NPBRandom`
-
-   .. note::
-
-      Right now, :class:`~NPBRandom.NPBRandomStream` and
-      :class:`~PCGRandom.RandomStream` are available (where
-      :class:`~PCGRandom.RandomStream` implements the PCG algorithm). In the
-      future, we expect that `PCGRandomStream` will be available as another name
-      for the PCG RNG stream.  At that point, `RandomStream` will change to a
-      type alias for the default RNG. The function :proc:`makeRandomStream` is
-      available to avoid compatibility problems from this naming change.
-      Programs that need to specifically request PCG should do so with
-      :proc:`makeRandomStream` until the name `PCGRandomStream` is available..
 
    .. note::
 
@@ -72,9 +60,11 @@
 */
 module Random {
 
-  use RandomSupport;
-  use NPBRandom;
-  use PCGRandom;
+  public use RandomSupport;
+  public use NPBRandom;
+  public use PCGRandom;
+  private use HaltWrappers only;
+
 
 
   /* Select between different supported RNG algorithms.
@@ -88,6 +78,9 @@ module Random {
 
   /* The default RNG. The current default is PCG - see :mod:`PCGRandom`. */
   param defaultRNG = RNG.PCG;
+
+  type RandomStream = if defaultRNG == RNG.PCG then PCGRandomStream
+                                               else NPBRandomStream;
 
   // CHPLDOC FEEDBACK: If easy, I'd suggest either deprecating the
   // :arg <type> <name>: form or else switching the order to
@@ -134,7 +127,10 @@ module Random {
   proc fillRandom(arr: [], seed: int(64) = SeedGenerator.oddCurrentTime, param
       algorithm=defaultRNG)
     where isSupportedNumericType(arr.eltType) {
-    var randNums = makeRandomStream(seed, eltType=arr.eltType, parSafe=false, algorithm=algorithm);
+    var randNums = createRandomStream(seed=seed,
+                                      eltType=arr.eltType,
+                                      parSafe=false,
+                                      algorithm=algorithm);
     randNums.fillRandom(arr);
   }
 
@@ -153,7 +149,10 @@ module Random {
      :type algorithm: :type:`RNG`
    */
   proc shuffle(arr: [], seed: int(64) = SeedGenerator.oddCurrentTime, param algorithm=RNG.PCG) {
-    var randNums = makeRandomStream(seed, eltType=arr.domain.idxType, parSafe=false, algorithm=algorithm);
+    var randNums = createRandomStream(seed=seed,
+                                      eltType=arr.domain.idxType,
+                                      parSafe=false,
+                                      algorithm=algorithm);
     randNums.shuffle(arr);
   }
 
@@ -169,8 +168,21 @@ module Random {
      :type algorithm: :type:`RNG`
    */
   proc permutation(arr: [], seed: int(64) = SeedGenerator.oddCurrentTime, param algorithm=RNG.PCG) {
-    var randNums = makeRandomStream(seed, eltType=arr.eltType, parSafe=false, algorithm=algorithm);
+    var randNums = createRandomStream(seed=seed,
+                                      eltType=arr.eltType,
+                                      parSafe=false,
+                                      algorithm=algorithm);
     randNums.permutation(arr);
+  }
+
+  pragma "no doc"
+  proc makeRandomStream(type eltType,
+                        seed: int(64) = SeedGenerator.oddCurrentTime,
+                        param parSafe: bool = true,
+                        param algorithm = defaultRNG) {
+    compilerWarning("makeRandomStream is deprecated - " +
+                    "please use createRandomStream instead");
+    return createRandomStream(eltType, seed, parSafe, algorithm);
   }
 
   /*
@@ -198,17 +210,22 @@ module Random {
 
     :returns: an owned RandomStream
   */
-  proc makeRandomStream(type eltType,
-                        seed: int(64) = SeedGenerator.oddCurrentTime,
-                        param parSafe: bool = true,
-                        param algorithm = defaultRNG) {
+  proc createRandomStream(type eltType,
+                          seed: int(64) = SeedGenerator.oddCurrentTime,
+                          param parSafe: bool = true,
+                          param algorithm = defaultRNG) {
     if algorithm == RNG.PCG then
-      return new owned RandomStream(seed=seed, parSafe=parSafe, eltType=eltType);
+      return new owned PCGRandomStream(seed=seed,
+                                       parSafe=parSafe,
+                                       eltType=eltType);
     else if algorithm == RNG.NPB then
-      return new owned NPBRandomStream(seed=seed, parSafe=parSafe, eltType=eltType);
+      return new owned NPBRandomStream(seed=seed,
+                                       parSafe=parSafe,
+                                       eltType=eltType);
     else
       compilerError("Unknown random number generator");
   }
+
 
   pragma "no doc"
   /* Actual implementation of choice() */
@@ -393,11 +410,11 @@ module Random {
     Models a stream of pseudorandom numbers.  This class is defined for
     documentation purposes and should not be instantiated. See
     :mod:`PCGRandom` and :mod:`NPBRandom` for RNGs that can be
-    instantiated. To create a random stream, use :proc:`makeRandomStream`.
+    instantiated. To create a random stream, use :proc:`createRandomStream`.
 
     .. note::
 
-      This RandomStreamInterface is expected to change.
+      This RandomStreamInterface is expected to change`.
 
     .. note::
 
@@ -467,6 +484,8 @@ module Random {
 
       :arg n: The position in the stream to skip to.  Must be > 0.
       :type n: `integral`
+
+      :throws IllegalArgumentError: When called with non-positive `n` value.
      */
     proc skipToNth(n: integral) throws {
       compilerError("RandomStreamInterface.skipToNth called");
@@ -482,6 +501,7 @@ module Random {
       :type n: `integral`
 
       :returns: The `n`-th value in the random stream as type :type:`eltType`.
+      :throws IllegalArgumentError: When called with non-positive `n` value.
      */
     proc getNth(n: integral): eltType throws {
       compilerError("RandomStreamInterface.getNth called");
@@ -560,7 +580,7 @@ module Random {
     }
 
     pragma "no doc"
-    proc writeThis(f) {
+    proc writeThis(f) throws {
       f <~> "RandomStreamInterface(eltType=";
       f <~> eltType:string;
       f <~> ", parSafe=";
@@ -652,7 +672,8 @@ module Random {
   module PCGRandom {
 
     use RandomSupport;
-    use PCGRandomLib;
+    public use PCGRandomLib;
+    private use ChapelLocks;
 
     // How many generators do we need for this type?
     private
@@ -681,7 +702,7 @@ module Random {
       match the C PCG reference implementation and have specifically verified
       equal output given the same seed. However, this implementation differs
       from the C PCG reference implementation in how it produces random integers
-      within particular bounds (with :proc:`RandomStream.getNext` using `min`
+      within particular bounds (with :proc:`PCGRandomStream.getNext` using `min`
       and `max` arguments). In addition, this implementation directly supports
       the generation of random `real` values, unlike the C PCG implementation.
 
@@ -734,16 +755,8 @@ module Random {
          had two values < 2**31, removing the top 0 bit, and then combining
          the top 16 bits into the value provided to TestU01).
 
-
-      .. note::
-
-         This class is currently called RandomStream, but at some point
-         we expect to rename it PCGRandomStream. At that point, RandomStream
-         will represent the default RNG and will initially refer to
-         PCGRandomStream.
-
     */
-    class RandomStream {
+    class PCGRandomStream {
       /*
         Specifies the type of value generated by the PCGRandomStream.
         All numeric types are supported: `int`, `uint`, `real`, `imag`,
@@ -858,7 +871,7 @@ module Random {
       proc getNext(min: eltType, max:eltType): eltType {
         _lock();
         if boundsChecking && min > max then
-          HaltWrappers.boundsCheckHalt("Cannot generate random numbers within empty range: [" + min + ", " + max +  "]");
+          HaltWrappers.boundsCheckHalt("Cannot generate random numbers within empty range: [" + min:string + ", " + max:string +  "]");
 
         const result = PCGRandomStreamPrivate_getNext_noLock(eltType,min,max);
         _unlock();
@@ -872,7 +885,7 @@ module Random {
                    min: resultType, max:resultType): resultType {
         _lock();
         if boundsChecking && min > max then
-          HaltWrappers.boundsCheckHalt("Cannot generate random numbers within empty range: [" + min + ", " + max + "]");
+          HaltWrappers.boundsCheckHalt("Cannot generate random numbers within empty range: [" + min:string + ", " + max:string + "]");
 
         const result = PCGRandomStreamPrivate_getNext_noLock(resultType,min,max);
         _unlock();
@@ -886,10 +899,12 @@ module Random {
 
         :arg n: The position in the stream to skip to.  Must be > 0.
         :type n: `integral`
+
+        :throws IllegalArgumentError: When called with non-positive `n` value.
        */
       proc skipToNth(n: integral) throws {
         if n <= 0 then
-          throw new owned IllegalArgumentError("PCGRandomStream.skipToNth(n) called with non-positive 'n' value " + n);
+          throw new owned IllegalArgumentError("PCGRandomStream.skipToNth(n) called with non-positive 'n' value " + n:string);
         _lock();
         PCGRandomStreamPrivate_skipToNth_noLock(n);
         _unlock();
@@ -905,10 +920,11 @@ module Random {
         :type n: `integral`
 
         :returns: The `n`-th value in the random stream as type :type:`eltType`.
+        :throws IllegalArgumentError: When called with non-positive `n` value.
        */
       proc getNth(n: integral): eltType throws {
         if (n <= 0) then
-          throw new owned IllegalArgumentError("PCGRandomStream.getNth(n) called with non-positive 'n' value " + n);
+          throw new owned IllegalArgumentError("PCGRandomStream.getNth(n) called with non-positive 'n' value " + n:string);
         _lock();
         PCGRandomStreamPrivate_skipToNth_noLock(n);
         const result = PCGRandomStreamPrivate_getNext_noLock(eltType);
@@ -920,7 +936,7 @@ module Random {
         Fill the argument array with pseudorandom values.  This method is
         identical to the standalone :proc:`~Random.fillRandom` procedure,
         except that it consumes random values from the
-        :class:`RandomStream` object on which it's invoked rather
+        :class:`PCGRandomStream` object on which it's invoked rather
         than creating a new stream for the purpose of the call.
 
         :arg arr: The array to be filled
@@ -1078,7 +1094,7 @@ module Random {
       }
 
       pragma "no doc"
-      override proc writeThis(f) {
+      override proc writeThis(f) throws {
         f <~> "PCGRandomStream(eltType=";
         f <~> eltType:string;
         f <~> ", parSafe=";
@@ -2260,6 +2276,7 @@ module Random {
   module NPBRandom {
 
     use RandomSupport;
+    private use ChapelLocks;
 
     /*
       Models a stream of pseudorandom numbers.  See the module-level
@@ -2383,10 +2400,12 @@ module Random {
 
         :arg n: The position in the stream to skip to.  Must be > 0.
         :type n: `integral`
+
+        :throws IllegalArgumentError: When called with non-positive `n` value.
        */
       proc skipToNth(n: integral) throws {
         if n <= 0 then
-          throw new owned IllegalArgumentError("NPBRandomStream.skipToNth(n) called with non-positive 'n' value " + n);
+          throw new owned IllegalArgumentError("NPBRandomStream.skipToNth(n) called with non-positive 'n' value " + n:string);
         _lock();
         NPBRandomStreamPrivate_skipToNth_noLock(n);
         _unlock();
@@ -2402,10 +2421,11 @@ module Random {
         :type n: `integral`
 
         :returns: The `n`-th value in the random stream as type :type:`eltType`.
+        :throws IllegalArgumentError: When called with non-positive `n` value.
        */
       proc getNth(n: integral): eltType throws {
         if (n <= 0) then
-          throw new owned IllegalArgumentError("NPBRandomStream.getNth(n) called with non-positive 'n' value " + n);
+          throw new owned IllegalArgumentError("NPBRandomStream.getNth(n) called with non-positive 'n' value " + n:string);
         _lock(); 
         NPBRandomStreamPrivate_skipToNth_noLock(n);
         const result = NPBRandomStreamPrivate_getNext_noLock();
@@ -2480,7 +2500,7 @@ module Random {
       }
 
       pragma "no doc"
-      override proc writeThis(f) {
+      override proc writeThis(f) throws {
         f <~> "NPBRandomStream(eltType=";
         f <~> eltType:string;
         f <~> ", parSafe=";

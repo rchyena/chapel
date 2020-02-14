@@ -4,11 +4,12 @@
    contributed by Ben Harshbarger
    derived from the GNU C version by Jeremy Zerfas
 */
+use IO;
 
 var table : [1..128] uint(8);
 
-const newLine     = "\n".byte(1);
-const greaterThan = ">".byte(1);
+const newLine     = "\n".toByte();
+const greaterThan = ">".toByte();
 
 proc main(args: [] string) {
   var inFile = openfd(0);

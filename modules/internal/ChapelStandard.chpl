@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -21,27 +21,23 @@
 //
 pragma "export init"
 module ChapelStandard {
-  use startInitCommDiags;  // Internal, but uses standard/CommDiagnostics
+  private use startInitCommDiags;
+  // Internal, but uses standard/CommDiagnostics
 
   // Internal modules.
-  use CPtr;
   use CString;
+  use Bytes;
   use String;
   use OwnedObject;
   use SharedObject;
-  use ChapelDebugPrint;
   use ChapelEnv;
   use ChapelBase;
-  use MemConsistency;
   use Atomics;
   use NetworkAtomics;
   use NetworkAtomicTypes;
   use AtomicsCommon;
-  use ChapelLocks;
   use ChapelIteratorSupport;
   use ChapelThreads;
-  use ChapelThreadsInternal;
-  use ChapelTasksInternal;
   use ChapelTuple;
   use ChapelRange;
   use ChapelReduce;
@@ -57,22 +53,19 @@ module ChapelStandard {
   use LocaleTree;
   use DefaultAssociative;
   use DefaultSparse;
-  use DefaultOpaque;
   use ChapelTaskID;
   use ChapelTaskTable;
   use MemTracking;
   use ChapelUtil;
   use ChapelError;
-  use ChapelDynDispHack;
   use ChapelTaskData;
   use ChapelSerializedBroadcast;
-  use ExternalString;
+  use ExportWrappers;
 
   // Standard modules.
   use Assert;
-  use HaltWrappers only ;
   use Types;
   use Math;
 
-  use stopInitCommDiags;  // Internal, but uses standard/CommDiagnostics
+  private use stopInitCommDiags;  // Internal, but uses standard/CommDiagnostics
 }

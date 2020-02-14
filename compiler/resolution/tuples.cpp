@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -958,7 +958,7 @@ static AggregateType* do_computeTupleWithIntent(bool           valueOnly,
 
       // Compute the result type of copying
       // (but don't apply this to references if !valueOnly)
-      if (copyWith && isUserDefinedRecord(useType) &&
+      if (copyWith && typeNeedsCopyInitDeinit(useType) &&
           (valueOnly || !isReferenceType(field->type))) {
         VarSymbol* var = newTemp("test_copy", useType);
         CallExpr* copy = new CallExpr(copyWith, var);
@@ -1037,13 +1037,7 @@ static AggregateType* do_computeTupleWithIntent(bool           valueOnly,
 
 AggregateType* computeTupleWithIntentForArg(IntentTag intent, AggregateType* t, ArgSymbol* arg)
 {
-  INT_ASSERT(arg);
-  bool borrowConvert = false;
-  if (arg->hasFlag(FLAG_INSTANTIATED_FROM_ANY) &&
-      !arg->getFunction()->hasFlag(FLAG_NO_BORROW_CONVERT))
-    borrowConvert = true;
-
-  return do_computeTupleWithIntent(false, intent, t, NULL, NULL, borrowConvert);
+  return do_computeTupleWithIntent(false, intent, t, NULL, NULL, false);
 }
 
 AggregateType* computeTupleWithIntent(IntentTag intent, AggregateType* t)

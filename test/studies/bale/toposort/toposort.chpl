@@ -5,6 +5,7 @@ use BlockDist;
 use CommDiagnostics;
 use Sort;
 use LinkedLists;
+use IO;
 
 config param enableRuntimeDebugging = true;
 config const debugAll : bool = false;
@@ -130,16 +131,19 @@ class Vector {
 class ParallelWorkQueue {
   type eltType;
   type lockType;
-  var lock : unmanaged lockType;
+  var lock : lockType;
   var queue : unmanaged Vector(eltType);
 
   var terminated : atomic bool;
   const terminatedRetries : int;
 
-  proc init( type eltType, type lockType = SyncLock, retries : int = 5 ){
+  proc init( type eltType, type lockType = unmanaged SyncLock, retries : int = 5 ){
+    if isClassType(lockType) && !isUnmanagedClassType(lockType) then
+      compilerError("Expected unmanaged lockType");
+
     this.eltType = eltType;
     this.lockType = lockType;
-    this.lock = new unmanaged lockType();
+    this.lock = new lockType();
     this.queue = new unmanaged Vector( eltType );
     this.complete();
 
@@ -226,20 +230,20 @@ class DistributedWorkQueue {
   pragma "no doc"
   inline proc _value {
     if pid == -1 then halt("DistributedWorkQueue is uninitialized.");
-    return chpl_getPrivatizedCopy(LocalDistributedWorkQueue(eltType,lockType), pid);
+    return chpl_getPrivatizedCopy(unmanaged LocalDistributedWorkQueue(eltType,lockType), pid);
   }
 
   forwarding _value;
 
-  proc init( type eltType, targetLocales : [] locale, type lockType = AtomicLock ){
+  proc init( type eltType, targetLocales : [] locale, type lockType = unmanaged AtomicLock ){
     this.eltType = eltType;
     this.lockType = lockType;
 
     this.localesDomain = {0..#targetLocales.domain.size};
-
-    this.complete();
+    // locales is initialized here
     this.localInstance = new unmanaged LocalDistributedWorkQueue(eltType, lockType, targetLocales);
     this.pid = this.localInstance.pid;
+    this.complete();
   }
 
   proc deinit(){
@@ -254,7 +258,7 @@ class LocalDistributedWorkQueue {
   const localeDomain : domain(1);
   const localeArray : [localeDomain] locale;
 
-  var lock : unmanaged lockType;
+  var lock : lockType;
   var queue : unmanaged Vector(eltType);
   var terminated : atomic bool;
   const terminatedRetries : int;
@@ -262,11 +266,14 @@ class LocalDistributedWorkQueue {
   var pid = -1;
 
   proc init( type eltType, type lockType, localeArray : [?localeDomain] locale, retries : int = 5 ){
+    if isClassType(lockType) && !isUnmanagedClassType(lockType) then
+      compilerError("Expected unmanaged lockType");
+
     this.eltType = eltType;
     this.lockType = lockType;
     this.localeDomain = {0..#localeDomain.size};
     this.localeArray = reshape( localeArray, {0..#localeDomain.size} );
-    this.lock = new unmanaged lockType();
+    this.lock = new lockType();
     this.queue = new unmanaged Vector(eltType);
     this.terminatedRetries = retries;
 
@@ -281,7 +288,7 @@ class LocalDistributedWorkQueue {
     this.lockType = lockType;
     this.localeDomain = that.localeDomain;
     this.localeArray = that.localeArray;
-    this.lock = new unmanaged lockType();
+    this.lock = new lockType();
     this.queue = new unmanaged Vector( that.queue );
     this.terminatedRetries = that.terminatedRetries;
     this.pid = pid;
@@ -505,7 +512,7 @@ class PermutationMap {
 
 class TopoSortResult {
   type idxType;
-  var permutationMap : shared PermutationMap(idxType);
+  var permutationMap : shared PermutationMap(idxType)?;
   var timerDom : domain(string);
   var timers : [timerDom] Timer;
 
@@ -1152,7 +1159,7 @@ proc main(){
   if !silentMode then writeln("Permuting upper triangluar domain");
   var permutedSparseUpperTriangularIndexList = permutationMap.permuateIndexList( sparseUpperTriangularIndexList );
 
-  var topoResult : shared TopoSortResult(D.idxType);
+  var topoResult : shared TopoSortResult(D.idxType)?;
 
   select implementation {
     when ToposortImplementation.Serial {
@@ -1189,14 +1196,14 @@ proc main(){
     }
   }
 
-  var solvedMap = topoResult.permutationMap;
+  var solvedMap = topoResult!.permutationMap!;
 
   if printPerfStats {
     writeln( "Benchmark timers:");
-    for timerName in topoResult.timerDom {
-      writeln(timerName, ": ", topoResult.timers[timerName].elapsed() );
+    for timerName in topoResult!.timerDom {
+      writeln(timerName, ": ", topoResult!.timers[timerName].elapsed() );
     }
-    writeln( "Rows/second: ", (N/topoResult.timers["whole"].elapsed()) );
+    writeln( "Rows/second: ", (N/topoResult!.timers["whole"].elapsed()) );
   }
 
   if printPermutations then writeln( "Solved permutation map:\n", solvedMap );

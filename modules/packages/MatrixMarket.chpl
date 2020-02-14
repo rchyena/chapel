@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  * 
  * The entirety of this work is licensed under the Apache License,
@@ -128,7 +128,7 @@ module MatrixMarket {
         // before we try to update it with a separate channel.
         fout.flush();
 
-         var tfout = fd.writer(start=HEADER_LINE.length);
+         var tfout = fd.writer(start=HEADER_LINE.numBytes);
          tfout.writef("%i %i %i", nrows, ncols, nnz);
          tfout.close();
       }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -396,7 +396,27 @@ void addNoAliasSetsInFn(FnSymbol* fn) {
         ++it) {
       Symbol* otherSym = it->first;
       if (otherSym != var) {
-        c->insertAtTail(new SymExpr(otherSym));
+        if (ArgSymbol* arg = toArgSymbol(otherSym)) {
+          bool isReturning = arg->originalIntent == INTENT_OUT ||
+                             arg->intent == INTENT_OUT ||
+                             arg->hasFlag(FLAG_RETARG);
+
+          if (isReturning) {
+            // Don't consider this arg
+            //  (returning an array could cause aliasing the ret arg)
+          } else {
+            // Add to both the local variable and to the array
+            // (since the above outer loop only considers local variables)
+            c->insertAtTail(new SymExpr(otherSym));
+            CallExpr* otherC = noAliasCallsForSymbol[otherSym];
+            INT_ASSERT(otherC);
+            otherC->insertAtTail(new SymExpr(var));
+          }
+        } else {
+          // Other is a local variable
+          // Will add the symmetric case when processing it.
+          c->insertAtTail(new SymExpr(otherSym));
+        }
       }
     }
   }

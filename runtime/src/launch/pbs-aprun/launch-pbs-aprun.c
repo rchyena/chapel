@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  * 
  * The entirety of this work is licensed under the Apache License,
@@ -392,14 +392,13 @@ static void genQsubScript(int argc, char *argv[], int numLocales) {
 static void chpl_launch_cleanup(void) {
   if (!debug) {
     if (unlink(expectFilename)) {
-      char msg[1024];
-      snprintf(msg, 1024, "Error removing temporary file '%s': %s",
+      char msg[FILENAME_MAX + 35];
+      snprintf(msg, FILENAME_MAX + 35, "Error removing temporary file '%s': %s",
                expectFilename, strerror(errno));
       chpl_warning(msg, 0, 0);
     }
   }
 }
-
 
 int chpl_launch(int argc, char* argv[], int32_t numLocales) {
   int retcode;

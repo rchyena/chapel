@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -50,6 +50,7 @@ enum IF1_const_kind {
 
 enum IF1_string_kind {
   STRING_KIND_STRING,
+  STRING_KIND_BYTES,
   STRING_KIND_C_STRING
 };
 
@@ -202,6 +203,7 @@ inline const char*
 Immediate::string_value( void) const {
   INT_ASSERT(const_kind == CONST_KIND_STRING);
   INT_ASSERT(string_kind == STRING_KIND_STRING ||
+             string_kind == STRING_KIND_BYTES ||
              string_kind == STRING_KIND_C_STRING);
 
   return v_string;

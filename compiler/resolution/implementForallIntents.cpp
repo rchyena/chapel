@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -602,6 +602,12 @@ static ShadowVarSymbol* create_IN_Parentvar(ForallStmt* fs,
     INPovar = inptemp;
   }
 
+  // Insert a move in the init block for this shadow variable
+  // to enable other passes to understand the data flow. This
+  // move is not needed in forall lowering.
+  CallExpr* move = new CallExpr(PRIM_MOVE, INP, INPovar);
+  INP->initBlock()->insertAtTail(move);
+
   INP->outerVarSE = new SymExpr(INPovar);
   insert_help(INP->outerVarSE, NULL, INP);
 
@@ -801,13 +807,7 @@ static void resolveShadowVarTypeIntent(Type*& type, ForallIntentTag& intent,
 static AggregateType* isRecordReceiver(Symbol* sym) {
   if (sym->hasFlag(FLAG_ARG_THIS))
     if (Type* type = sym->type->getValType())
-      if (isRecord(type)                      &&
-          // Array-typed 'this' could be passed by ref-intent and so "pruned",
-          // see resolveShadowVarTypeIntent(). Then, there would not be
-          // a shadow variable for it and convertFieldsOfRecordReceiver()
-          // would not see it and would not do the transformations.
-          // So, skip arrays always, for consistency.
-          ! type->symbol->hasFlag(FLAG_ARRAY) )
+      if (isUserRecord(type))
         return toAggregateType(type);
   return NULL;
 }
@@ -836,13 +836,10 @@ static void doImplicitShadowVars(ForallStmt* fs, BlockStmt* block,
                                  SymbolMap& outer2shadow)
 {
   std::vector<SymExpr*> symExprs;
-  collectSymExprs(block, symExprs);
+  collectLcnSymExprs(block, symExprs);
 
   for_vector(SymExpr, se, symExprs) {
     Symbol* sym = se->symbol();
-
-    if (!isLcnSymbol(sym)) // quick filter
-      continue;
 
     if (Symbol* sub = outer2shadow.get(sym)) { // already know how to handle?
       if (sub != markPruned)
@@ -958,8 +955,30 @@ static Symbol* isFieldAccess(AggregateType* recType, Expr* arg) {
         // field access.
         if (UnresolvedSymExpr* base = toUnresolvedSymExpr(call->baseExpr))
           if (Symbol* fieldSym = recType->getField(base->unresolved, false))
-            return fieldSym;
+            if (! fieldSym->hasFlag(FLAG_PARAM) &&
+                ! fieldSym->hasFlag(FLAG_TYPE_VARIABLE))
+              return fieldSym;
   return NULL;
+}
+
+static VarSymbol* createFieldRef(Expr* anchor, Symbol* thisSym,
+                                 Symbol* fieldSym, bool isConst)
+{
+  VarSymbol* fieldRef = newTemp(astr(fieldSym->name, "_ref"),
+                                fieldSym->type->getRefType());
+  fieldRef->qual = isConst ? QUAL_CONST_REF : QUAL_REF;
+  if (isConst) fieldRef->addFlag(FLAG_CONST);
+  anchor->insertBefore(new DefExpr(fieldRef));
+
+  BlockStmt* holder = new BlockStmt();
+  anchor->insertBefore(holder);
+  // This is how a ref variable is currently initialized.
+  CallExpr* init = new CallExpr(fieldSym->name, gMethodToken, thisSym);
+  holder->insertAtTail(new CallExpr(PRIM_MOVE, fieldRef, init));
+  resolveBlockStmt(holder);
+  holder->flattenAndRemove();
+
+  return fieldRef;
 }
 
 // Given a field "myField", create a shadow variable myField_SV
@@ -969,19 +988,7 @@ static ShadowVarSymbol* createSVforFieldAccess(ForallStmt* fs, Symbol* ovar,
                                                Symbol* field)
 {
   bool isConst = ovar->isConstant() || field->isConstant();
-  VarSymbol* fieldRef = newTemp(astr(field->name, "_ref"),
-                                field->type->getRefType());
-  fieldRef->qual = isConst ? QUAL_CONST_REF : QUAL_REF;
-  if (isConst) fieldRef->addFlag(FLAG_CONST);
-  fs->insertBefore(new DefExpr(fieldRef));
-
-  BlockStmt* holder = new BlockStmt();
-  fs->insertBefore(holder);
-  // This is how a ref variable is currently initialized.
-  CallExpr* init = new CallExpr(field->name, gMethodToken, ovar);
-  holder->insertAtTail(new CallExpr(PRIM_MOVE, fieldRef, init));
-  resolveBlockStmt(holder);
-  holder->flattenAndRemove();
+  VarSymbol* fieldRef = createFieldRef(fs, ovar, field, isConst);
 
   // Now create the shadow variable.
   Type*           svarType   = field->type;
@@ -1019,6 +1026,7 @@ static void doConvertFieldsOfThis(ForallStmt* fs, AggregateType* recType,
     svar->defPoint->remove();
 }
 
+// See also convertFieldsOfRecordThis().
 static void convertFieldsOfRecordReceiver(ForallStmt* fs) {
   // Each access to the receiver's field will reference the ArgSymbol
   // for 'this'. Which will force us to have a shadow variable for 'this'
@@ -1036,6 +1044,82 @@ static void convertFieldsOfRecordReceiver(ForallStmt* fs) {
     if (Symbol* ovar = svar->outerVarSym())
       if (AggregateType* recType = isRecordReceiver(ovar))
         doConvertFieldsOfThis(fs, recType, svar, ovar);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Do the same for task functions.
+// This code is invoked from elsewhere.
+
+// If 'fn' is nested in a method on a record, return its 'this' formal.
+static ArgSymbol* enclosingRecordThisArg(FnSymbol* fn)
+{
+  while (FnSymbol* parent = toFnSymbol(fn->defPoint->parentSymbol))
+  {
+    if (ArgSymbol* thisArg = toArgSymbol(parent->_this))
+      if (isRecordReceiver(thisArg))
+        return thisArg;
+
+    if (parent->hasFlag(FLAG_METHOD))
+      // A method on a non-record or a weird-o lacking _this.
+      return NULL;
+
+    fn = parent;
+  }
+
+  return NULL; // not in a method
+}
+
+// This adds a new formal to 'fn' and augments all calls to 'fn'
+// to pass a field access to that formal.
+static ArgSymbol* createArgForFieldAccess(ArgSymbol* thisArg, FnSymbol* fn,
+                                          Symbol* fieldSym)
+{
+  bool isConst = thisArg->isConstant() || fieldSym->isConstant();
+  // Create the formal.
+  IntentTag intent = isConst ? INTENT_CONST : INTENT_BLANK;
+  ArgSymbol* fieldArg = new ArgSymbol(intent, astr(fieldSym->name, "_arg"),
+                                      fieldSym->type);
+  fn->insertFormalAtTail(fieldArg);
+
+  // Pass an actual correspondingly.
+  // Btw at this point there should be just one call to 'fn'.
+  // Because it is a task function representing a syntactic task construct.
+  for_SymbolSymExprs(fnse, fn) {
+    CallExpr* fnCall = toCallExpr(fnse->parentExpr);
+    INT_ASSERT(fnCall->baseExpr == fnse); // expect a simple call to task fn
+
+    VarSymbol* fieldRef = createFieldRef(fnCall->getStmtExpr(), thisArg,
+                                         fieldSym, isConst);
+    fnCall->insertAtTail(fieldRef);
+  }
+  
+  return fieldArg;
+}
+
+// Caller to ensure that 'fn' needs task intents.
+// See also convertFieldsOfRecordReceiver().
+void convertFieldsOfRecordThis(FnSymbol* fn) {
+  // If we are past resolution, we might be adding task intents
+  // to something that is created by the compiler, rather than
+  // something that corresponds to a task construct in user code.
+  // Future work: do this during createTaskFunctions().
+  INT_ASSERT(! resolved);
+
+  ArgSymbol* thisArg = enclosingRecordThisArg(fn);
+  if (! thisArg) return; // not in a method on a record
+  AggregateType* thisType = toAggregateType(thisArg->type->getValType());
+  std::map<Symbol*, ArgSymbol*> fieldArgs;
+
+  std::vector<SymExpr*> symExprs;
+  collectSymExprsFor(fn, thisArg, symExprs);
+  for_vector(SymExpr, se, symExprs)
+    if (Symbol* fieldSym = isFieldAccess(thisType, se))
+     {
+       ArgSymbol*& fieldArg = fieldArgs[fieldSym];
+       if (fieldArg == NULL)
+         fieldArg = createArgForFieldAccess(thisArg, fn, fieldSym);
+       se->parentExpr->replace(new SymExpr(fieldArg));
+     }
 }
 
 /////////////////////////////////////////////////////////////////////////////

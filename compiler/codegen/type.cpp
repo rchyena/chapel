@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -159,17 +159,8 @@ const char* AggregateType::classStructName(bool standalone) {
   if (standalone) {
     const char* basename = symbol->cname;
     if (aggregateTag == AGGREGATE_CLASS) {
-      //
-      // For extern classes, we've traditionally required them to be
-      // named _C; we could use a different naming convention, but
-      // have never agreed upon one.
-      //
-      if (symbol->hasFlag(FLAG_EXTERN)) {
-        return astr("_", basename);
-      } else {
-        // keep in sync with maxCNameAddedChars
-        return astr(CLASS_STRUCT_PREFIX, basename, "_object");
-      }
+      // keep in sync with maxCNameAddedChars
+      return astr(CLASS_STRUCT_PREFIX, basename, "_object");
     } else
       return basename;
   } else {

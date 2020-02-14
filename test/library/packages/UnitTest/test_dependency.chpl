@@ -1,18 +1,18 @@
 use UnitTest;
-proc A(test: Test) throws {
+proc A(test: borrowed Test) throws {
   test.assertTrue(true);
 }
 
-proc B(test: Test) throws {
+proc B(test: borrowed Test) throws {
   test.dependsOn(A);
 }
 
-proc C(test: Test) throws {
+proc C(test: borrowed Test) throws {
   test.dependsOn(A,B);
 }
 
-proc D(test: Test) throws {
+proc D(test: borrowed Test) throws {
   test.dependsOn(B,A);
 }
 
-UnitTest.runTest(D,C,B,A);
+UnitTest.main();

@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -103,6 +103,7 @@ void readArgsFromFile(std::string path, std::vector<std::string>& cmds);
 void expandInstallationPaths(std::string& arg);
 void expandInstallationPaths(std::vector<std::string>& args);
 
+char*       chplRealPath(const char* path);
 char*       dirHasFile(const char* dir, const char* file);
 char*       findProgramPath(const char* argv0);
 bool        isSameFile(const char* pathA, const char* pathB);

@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -1481,6 +1481,8 @@ static void narrowWideClassesThroughCalls()
 
           if (narrowType.isRefOrWideRef() == false &&
               narrowType.type()->symbol->hasFlag(FLAG_EXTERN)) {
+
+            INT_FATAL("dead code"); // extern classes no longer supported
 
             // Insert a local check because we cannot reflect any changes
             // made to the class back to another locale

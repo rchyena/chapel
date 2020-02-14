@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -25,6 +25,7 @@
 #include "driver.h"
 #include "expr.h"
 #include "PartialCopyData.h"
+#include "passes.h"
 #include "resolveFunction.h"
 #include "resolveIntents.h"
 #include "stmt.h"
@@ -44,6 +45,16 @@
 static int             explainInstantiationLine   = -2;
 static ModuleSymbol*   explainInstantiationModule = NULL;
 static Vec<FnSymbol*>  whereStack;
+
+static
+FnSymbol* instantiateFunction(FnSymbol*  fn,
+                              FnSymbol*  root,
+                              SymbolMap& allSubs,
+                              CallExpr*  call,
+                              SymbolMap& subs,
+                              SymbolMap& map,
+                              bool& hasGenericDefaultExpr,
+                              SymbolMap& allSubsBeforeDefaultExprs);
 
 static bool            fixupDefaultInitCopy(FnSymbol* fn,
                                             FnSymbol* newFn,
@@ -129,20 +140,6 @@ getNewSubType(FnSymbol* fn, Symbol* key, TypeSymbol* actualTS) {
     // instantiation of a formal of ref type loses ref
     return getNewSubType(fn, key, actualTS->getValType()->symbol);
   } else {
-    if (isManagedPtrType(actualTS->getValType()))
-      if (!(fn->hasFlag(FLAG_INIT_COPY_FN) ||
-            fn->hasFlag(FLAG_AUTO_COPY_FN) ||
-            fn->hasFlag(FLAG_BUILD_TUPLE) ||
-            fn->hasFlag(FLAG_NO_BORROW_CONVERT) ||
-            (fn->name == astrInit && fn->hasFlag(FLAG_COMPILER_GENERATED)) ||
-            fn->name == astr_cast))
-        if (ArgSymbol* arg = toArgSymbol(key))
-          if (!arg->hasFlag(FLAG_TYPE_VARIABLE))
-            if (arg->intent == INTENT_CONST ||
-                arg->intent == INTENT_BLANK)
-              if (arg->getValType() == dtAny)
-                return getManagedPtrBorrowType(actualTS->getValType())->symbol;
-
     return actualTS;
   }
 }
@@ -172,6 +169,23 @@ checkInfiniteWhereInstantiation(FnSymbol* fn) {
 }
 
 
+static Map<FnSymbol*,int> instantiationLimitMap;
+
+
+static bool trackInstantiationsForFn(FnSymbol* fn) {
+  ModuleSymbol* mod = fn->getModule();
+
+          // Don't count instantiations on internal modules
+  return (mod && mod->modTag != MOD_INTERNAL &&
+          // Nor ones that are compiler-generated (we could, but this
+          // has caused problems for me in some cases and I think it's
+          // reasonable to assume compiler-generated functions won't
+          // result in infinitely recursive instantiations; to
+          // reproduce this, comment out that part of the test and try
+          // test/functions/resolution/instantiateMax/instMaxOKifNonrecursive.chpl).
+          !fn->hasFlag(FLAG_COMPILER_GENERATED));
+}
+
 //
 // check for infinite instantiation by limiting the number of
 // instantiations of a particular type or function; this is important
@@ -183,13 +197,10 @@ checkInfiniteWhereInstantiation(FnSymbol* fn) {
 //
 static void
 checkInstantiationLimit(FnSymbol* fn) {
-  static Map<FnSymbol*,int> instantiationLimitMap;
-
-  // Don't count instantiations on internal modules
-  // nor ones explicitly marked NO_INSTANTIATION_LIMIT.
-  if (fn->getModule() &&
-      fn->getModule()->modTag != MOD_INTERNAL &&
-      !fn->hasFlag(FLAG_NO_INSTANTIATION_LIMIT)) {
+  if (trackInstantiationsForFn(fn)) {
+    while (fn->instantiatedFrom != NULL) {
+      fn = fn->instantiatedFrom;
+    }
     if (instantiationLimitMap.get(fn) >= instantiation_limit) {
       USR_FATAL_CONT(fn, "Function '%s' has been instantiated too many times",
                      fn->name);
@@ -197,7 +208,39 @@ checkInstantiationLimit(FnSymbol* fn) {
                 " the instantiation limit from %d", instantiation_limit);
       USR_STOP();
     }
+    // printf("Incrementing instantiation count for %s (%p)\n", fn->name, fn);
     instantiationLimitMap.put(fn, instantiationLimitMap.get(fn)+1);
+  }
+}
+
+void popInstantiationLimit(FnSymbol* fn) {
+  bool expandedVarArgs = fn->hasFlag(FLAG_EXPANDED_VARARGS);
+  //
+  // Go from the concrete function to the generic it was based upon (if any)
+  //
+  fn = fn->instantiatedFrom;
+  if (fn == NULL) {
+    return; // this was not a generic function, so it won't be in the table
+  }
+  while (fn->instantiatedFrom != NULL) {
+    fn = fn->instantiatedFrom;
+  }
+
+  if (trackInstantiationsForFn(fn)) {
+    // printf("Decrementing instantiation count for %s (%p)\n", fn->name, fn);
+    int count = instantiationLimitMap.get(fn);
+    if (count > 0) {
+      instantiationLimitMap.put(fn, instantiationLimitMap.get(fn)-1);
+    } else {
+      //
+      // varargs functions are not consistently added to the instantiationLimitMap,
+      // so don't fatal error if we didn't find it; for other functions, not
+      // finding it suggests something is wrong
+      //
+      if (!expandedVarArgs) {
+        INT_FATAL("Over-decrementing a generic instantiation counter");
+      }
+    }
   }
 }
 
@@ -297,8 +340,6 @@ void instantiateBody(FnSymbol* fn) {
 FnSymbol* instantiateSignature(FnSymbol*  fn,
                                SymbolMap& subs,
                                CallExpr*  call) {
-  FnSymbol* retval = NULL;
-
   //
   // Handle tuples explicitly
   // (_build_tuple, tuple type constructor, tuple default constructor)
@@ -306,7 +347,7 @@ FnSymbol* instantiateSignature(FnSymbol*  fn,
 
   if (fn->hasFlag(FLAG_INIT_TUPLE)       == true ||
       fn->hasFlag(FLAG_BUILD_TUPLE_TYPE) == true) {
-    retval = createTupleSignature(fn, subs, call);
+    return createTupleSignature(fn, subs, call);
 
   } else {
     form_Map(SymbolMapElem, e, subs) {
@@ -336,28 +377,58 @@ FnSymbol* instantiateSignature(FnSymbol*  fn,
       if (cached != (FnSymbol*) gVoid) {
         checkInfiniteWhereInstantiation(cached);
 
-        retval = cached;
+        return cached;
+      } else {
+        INT_FATAL("cache returned gVoid");
+        return NULL;
       }
 
     } else {
       SET_LINENO(fn);
 
       // copy generic class type if this function is a type constructor
-      SymbolMap      map;
-      AggregateType* newType = NULL;
-      FnSymbol*      newFn   = NULL;
+      SymbolMap map;
+      FnSymbol* newFn = NULL;
+      bool hasGenericDefaultExpr = false;
+
+      SymbolMap allSubsBeforeDefaultExprs;
 
       // instantiate function
-      if (newType != NULL) {
-        map.put(fn->retType->symbol, newType->symbol);
+      newFn = instantiateFunction(fn, root, allSubs, call, subs, map,
+                                  hasGenericDefaultExpr,
+                                  allSubsBeforeDefaultExprs);
+      if (hasGenericDefaultExpr) {
+        // If we computed some substitutions based upon generic
+        // arguments with defaults, also check the cache entry
+        // with the complete list of substitutions.
+        if (FnSymbol* cached = checkCache(genericsCache, root, &allSubs)) {
+          if (cached != (FnSymbol*) gVoid) {
+            checkInfiniteWhereInstantiation(cached);
+
+            // If we have a cached function here, also store it in the
+            // cache for the case in which the arguments with defaults
+            // were not provided.
+            addCache(genericsCache, root, cached, &allSubsBeforeDefaultExprs);
+
+            // Remove the new function
+            newFn->defPoint->remove();
+
+            return cached;
+          } else {
+            INT_FATAL("cache returned gVoid");
+            return NULL;
+          }
+        }
       }
 
-      newFn = instantiateFunction(fn, root, allSubs, call, subs, map);
+      // We could not find any cached version. So, add the just-created
+      // instantiation to the cache.
+      addCache(genericsCache, root, newFn, &allSubs);
+      // And the version without defaultExprs
+      if (hasGenericDefaultExpr)
+        addCache(genericsCache, root, newFn, &allSubsBeforeDefaultExprs);
 
-      if (newType != NULL) {
-        newFn->retType = newType;
-      }
-
+      // Apply fixups to the function
       if (fixupTupleFunctions(fn, newFn, call) == false) {
         // Fix up chpl__initCopy for user-defined records
         if (fn->hasFlag(FLAG_INIT_COPY_FN)       ==  true &&
@@ -371,19 +442,19 @@ FnSymbol* instantiateSignature(FnSymbol*  fn,
         newFn->getFormal(2)->type->methods.add(newFn);
       }
 
-      newFn->tagIfGeneric();
+      if (fn->throwsError() == true) {
+        newFn->throwsErrorInit();
+      }
+
+      // Resolve formal type-exprs before checking if formals are generic
+      resolveSignature(newFn);
+      newFn->tagIfGeneric(&subs);
 
       explainAndCheckInstantiation(newFn, fn);
 
-      retval = newFn;
+      return newFn;
     }
   }
-
-  if (retval != NULL && fn->throwsError() == true) {
-    retval->throwsErrorInit();
-  }
-
-  return retval;
 }
 
 // This function is called by generic instantiation
@@ -395,7 +466,7 @@ static bool fixupDefaultInitCopy(FnSymbol* fn,
   bool       retval = false;
 
   if (AggregateType* ct = toAggregateType(arg->type)) {
-    if (isUserDefinedRecord(ct) == true && ct->hasInitializers()) {
+    if (typeNeedsCopyInitDeinit(ct) == true && ct->hasInitializers()) {
       // If the user has defined any initializer,
       // initCopy function should call the copy-initializer.
       //
@@ -411,7 +482,7 @@ static bool fixupDefaultInitCopy(FnSymbol* fn,
       // it up completely...
       instantiateBody(newFn);
 
-      if (FnSymbol* initFn = findCopyInit(ct)) {
+      if (FnSymbol* initFn = findCopyInitFn(ct)) {
         Symbol*   thisTmp  = newTemp(ct);
         DefExpr*  def      = new DefExpr(thisTmp);
         CallExpr* initCall = NULL;
@@ -429,6 +500,15 @@ static bool fixupDefaultInitCopy(FnSymbol* fn,
         // above code adds a call that would be considered already resolved.
         resolveCallAndCallee(initCall);
 
+        // Workaround: setting init= argument to ref in case
+        // the fields were not resolved yet
+        if (recordContainingCopyMutatesField(ct)) {
+          FnSymbol* fn = initCall->resolvedFunction();
+          INT_ASSERT(fn->numFormals() == 3);
+          ArgSymbol* arg = fn->getFormal(3);
+          arg->intent = INTENT_REF;
+          arg->originalIntent = INTENT_REF;
+        }
         if (ct->hasPostInitializer() == true) {
           CallExpr* post = new CallExpr("postinit", gMethodToken, thisTmp);
 
@@ -509,17 +589,18 @@ void determineAllSubs(FnSymbol*  fn,
 //
 // instantiate function
 //
+static
 FnSymbol* instantiateFunction(FnSymbol*  fn,
                               FnSymbol*  root,
                               SymbolMap& allSubs,
                               CallExpr*  call,
                               SymbolMap& subs,
-                              SymbolMap& map) {
+                              SymbolMap& map,
+                              bool& hasGenericDefaultExpr,
+                              SymbolMap& allSubsBeforeDefaultExprs) {
   FnSymbol* newFn = fn->partialCopy(&map);
 
-  addCache(genericsCache, root, newFn, &allSubs);
-
-  newFn->removeFlag(FLAG_GENERIC);
+  newFn->clearGeneric();
   newFn->addFlag(FLAG_INVISIBLE_FN);
   newFn->instantiatedFrom = fn;
   newFn->substitutions.map_union(allSubs);
@@ -536,14 +617,72 @@ FnSymbol* instantiateFunction(FnSymbol*  fn,
 
   putBefore->insertBefore(new DefExpr(newFn));
 
-  //
-  // add parameter instantiations to parameter map
-  //
-  for (int i = 0; i < subs.n; i++) {
-    if (ArgSymbol* arg = toArgSymbol(subs.v[i].key)) {
-      if (arg->intent == INTENT_PARAM) {
-        Symbol* key = map.get(arg);
-        Symbol* val = subs.v[i].value;
+  for_formals(formal, fn) {
+    ArgSymbol* newFormal = toArgSymbol(map.get(formal));
+
+    //
+    // Handle default expressions: set the type of the formal
+    // based upon the default expression value.
+    //
+    if (newFormal->defaultExpr != NULL &&
+        (newFormal->intent == INTENT_PARAM ||
+         newFormal->type->symbol->hasFlag(FLAG_GENERIC)) &&
+        !subs.get(formal)) {
+      // Resolve the default expression.
+      resolveBlockStmt(newFormal->defaultExpr);
+
+      Expr* tail = newFormal->defaultExpr->body.tail;
+      Symbol* val = NULL;
+      if (newFormal->intent == INTENT_PARAM) {
+        if (SymExpr* se = toSymExpr(tail)) {
+          if (se->symbol()->isParameter() == false) {
+            USR_FATAL(formal, "default value for param is not a param");
+
+          } else if (formal->type->symbol->hasFlag(FLAG_GENERIC)      == true &&
+                     canInstantiate(se->symbol()->type, formal->type) == false) {
+            USR_FATAL(formal,
+                      "type mismatch between declared formal type "
+                      "and default value type");
+
+          } else {
+            val = se->symbol();
+          }
+
+        } else {
+          USR_FATAL(formal, "default value for param is not a param");
+        }
+      } else {
+        Type* defType = tail->typeInfo();
+
+        if (defType == dtTypeDefaultToken)
+          val = dtTypeDefaultToken->symbol;
+        else if (Type* type = getInstantiationType(defType, NULL,
+                                                   newFormal->type, NULL,
+                                                   call,
+                                                   true, false)) {
+          val = type->symbol;
+        }
+      }
+
+      if (val != NULL) {
+        if (hasGenericDefaultExpr == false) {
+          hasGenericDefaultExpr = true;
+          // And copy the allSubs into allSubsBeforeDefaultExprs
+          allSubsBeforeDefaultExprs.map_union(allSubs);
+        }
+        subs.put(formal, val);
+        allSubs.put(formal, val);
+        newFn->substitutions.put(formal, val);
+      }
+    }
+
+
+    //
+    // add parameter instantiations to parameter map
+    //
+    if (Symbol* val = subs.get(formal)) {
+      if (formal->intent == INTENT_PARAM) {
+        Symbol* key = newFormal;
 
         if (!key || !val || isTypeSymbol(val)) {
           INT_FATAL("error building parameter map in instantiation");
@@ -552,17 +691,15 @@ FnSymbol* instantiateFunction(FnSymbol*  fn,
         paramMap.put(key, val);
       }
     }
-  }
 
-  //
-  // extend parameter map if parameter intent argument is instantiated
-  // again; this may happen because the type is omitted and the
-  // argument is later instantiated based on the type of the parameter
-  //
-  for_formals(arg, fn) {
-    if (paramMap.get(arg)) {
-      Symbol* key = map.get(arg);
-      Symbol* val = paramMap.get(arg);
+    //
+    // extend parameter map if parameter intent argument is instantiated
+    // again; this may happen because the type is omitted and the
+    // argument is later instantiated based on the type of the parameter
+    //
+    if (paramMap.get(formal)) {
+      Symbol* key = newFormal;
+      Symbol* val = paramMap.get(formal);
 
       if (!key || !val) {
         INT_FATAL("error building parameter map in instantiation");
@@ -570,15 +707,11 @@ FnSymbol* instantiateFunction(FnSymbol*  fn,
 
       paramMap.put(key, val);
     }
-  }
 
-  //
-  // set types and attributes of instantiated function's formals; also
-  // set up a defaultExpr for the new formal (why is this done?)
-  //
-  for_formals(formal, fn) {
-    ArgSymbol* newFormal = toArgSymbol(map.get(formal));
-
+    //
+    // set types and attributes of instantiated function's formals; also
+    // set up a defaultExpr for the new formal (why is this done?)
+    //
     if (formal->type == dtAny || formal->type == dtTuple)
       newFormal->addFlag(FLAG_INSTANTIATED_FROM_ANY);
 
@@ -602,19 +735,26 @@ FnSymbol* instantiateFunction(FnSymbol*  fn,
       if (!newFormal->defaultExpr || formal->hasFlag(FLAG_TYPE_VARIABLE)) {
         Symbol* defaultSym = NULL;
 
-        if (newFormal->defaultExpr) {
-          newFormal->defaultExpr->remove();
-        }
-
         if (Symbol* sym = paramMap.get(newFormal)) {
           defaultSym = sym;
         } else {
           defaultSym = gTypeDefaultToken;
         }
 
-        newFormal->defaultExpr = new BlockStmt(new SymExpr(defaultSym));
-
-        insert_help(newFormal->defaultExpr, NULL, newFormal);
+        SymExpr* defaultSe = new SymExpr(defaultSym);
+        // Replace the contents of the block with just defaultSe
+        if (newFormal->defaultExpr) {
+          // Empty the block, but leave the original block,
+          // in case it is used as a visibility block.
+          BlockStmt* block = newFormal->defaultExpr;
+          for_alist(stmt, block->body) {
+            stmt->remove();
+          }
+          block->insertAtTail(defaultSe);
+        } else {
+          newFormal->defaultExpr = new BlockStmt(defaultSe);
+          insert_help(newFormal->defaultExpr, NULL, newFormal);
+        }
       }
     }
   }
@@ -628,7 +768,7 @@ void explainAndCheckInstantiation(FnSymbol* newFn, FnSymbol* fn) {
                      &explainInstantiationModule);
   }
 
-  if (!newFn->hasFlag(FLAG_GENERIC) && explainInstantiationLine) {
+  if (!newFn->isGeneric() && explainInstantiationLine) {
     explainInstantiation(newFn);
   }
 

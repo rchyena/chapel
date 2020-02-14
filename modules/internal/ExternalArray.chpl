@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -23,7 +23,7 @@
 // arrays obtained from external code to Chapel (and thus that we do not own).
 //
 module ExternalArray {
-  use ChapelStandard;
+  private use ChapelStandard;
 
   extern record chpl_opaque_array {
     var _pid: int;
@@ -31,6 +31,7 @@ module ExternalArray {
     var _unowned: bool;
   }
 
+  pragma "export wrapper"
   extern record chpl_external_array {
     var elts: c_void_ptr;
     var num_elts: uint;
@@ -82,7 +83,11 @@ module ExternalArray {
   // arrType is a subclass of BaseArr
   pragma "no copy return"
   proc makeArrayFromOpaque(value: chpl_opaque_array, type arrType) {
-    var ret = _newArray(value._instance: arrType);
+    var asArrType = value._instance: arrType?;
+    if asArrType == nil then
+      halt("nil array passed to makeArrayFromOpaque");
+    var asNonNilArrType = try! asArrType: arrType;
+    var ret = _newArray(asNonNilArrType);
     // Don't clean up arrays we create in this way or the user will have garbage
     // memory after the first function call
     ret._pid = value._pid;
@@ -186,7 +191,8 @@ module ExternalArray {
   // Can't create an _array wrapper to call the cleanup function for us, so do
   // the next best thing.
   export proc cleanupOpaqueArray(arr: chpl_opaque_array) {
-    var cleanup = arr._instance: unmanaged BaseArr;
-    _do_destroy_arr(arr._unowned, cleanup);
+    var cleanup = arr._instance: unmanaged BaseArr?;
+    if cleanup then
+      _do_destroy_arr(arr._unowned, cleanup!);
   }
 }

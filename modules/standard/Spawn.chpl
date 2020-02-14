@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -128,6 +128,9 @@ other task is consuming it.
 
  */
 module Spawn {
+  public use IO;
+  public use SysError;
+  private use SysCTypes;
 
   private extern proc qio_openproc(argv:c_ptr(c_string),
                                    env:c_ptr(c_string),
@@ -178,7 +181,7 @@ module Spawn {
     param locking:bool;
 
     pragma "no doc"
-    var home:locale;
+    var home:locale = here;
 
     /* The Process ID number of the spawned process */
     var pid:int(64);
@@ -657,10 +660,10 @@ module Spawn {
   {
     if command.isEmpty() then
       throw new owned IllegalArgumentError('command cannot be an empty string');
+    
+    var args = if shellarg == "" then [executable, command]
+        else [executable, shellarg, command];
 
-    var args = [command];
-    if shellarg != "" then args.push_front(shellarg);
-    args.push_front(executable);
     return spawn(args, env, executable,
                  stdin=stdin, stdout=stdout, stderr=stderr,
                  kind=kind, locking=locking);
@@ -1033,7 +1036,7 @@ module Spawn {
     on home {
       err = qio_send_signal(pid, signal:c_int);
     }
-    if err then try ioerror(err, "in subprocess.send_signal, with signal " + signal);
+    if err then try ioerror(err, "in subprocess.send_signal, with signal " + signal:string);
   }
 
   // documented in the throws version

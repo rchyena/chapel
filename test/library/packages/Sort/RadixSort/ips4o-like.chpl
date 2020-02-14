@@ -3,6 +3,7 @@ use Sort;
 //use BlockDist;
 use Time;
 use Barriers;
+use PeekPoke;
 
 config const seed = SeedGenerator.oddCurrentTime;
 config const skew = false;
@@ -397,7 +398,7 @@ record AtomicBufferPointers {
     }
 
     wr.write(val);
-    numReading.write(0, memory_order_relaxed);
+    numReading.write(0, memoryOrder.relaxed);
   }
 
   // Gets the write pointer.
@@ -414,7 +415,7 @@ record AtomicBufferPointers {
   // Gets (write pointer, read pointer) and increments write pointer
   proc incWrite() {
     var val = packOffset(1, 0);
-    var got = wr.fetchAdd(val, memory_order_relaxed);
+    var got = wr.fetchAdd(val, memoryOrder.relaxed);
     return unpack(got);
   }
 
@@ -423,22 +424,22 @@ record AtomicBufferPointers {
   proc decRead() {
     // numReading.add should not move after following fetch_sub
     // b/c another thread could write to our block, isReading() returning false
-    numReading.fetchAdd(1, memory_order_acquire);
+    numReading.fetchAdd(1, memoryOrder.acquire);
     var val = packOffset(0, 1);
-    var got = wr.fetchSub(val, memory_order_relaxed);
+    var got = wr.fetchSub(val, memoryOrder.relaxed);
     return unpack(got);
   }
 
   // Decreases the read counter
   proc stopRead() {
     // synchronizes with threads wanting to write to this bucket
-    numReading.fetchSub(1, memory_order_release);
+    numReading.fetchSub(1, memoryOrder.release);
   }
 
   // Returns true if any thread is currently reading this bucket
   proc isReading() {
     // synchronize with threads currently reading from this bucket
-    return numReading.read(memory_order_acquire) != 0;
+    return numReading.read(memoryOrder.acquire) != 0;
   }
 }
 
@@ -479,7 +480,7 @@ proc copyifchecks(A:[], start_n:int, end_n:int) {
 
 proc putSampleAtArrayStart(in start_n:int, end_n:int, A:[], in numSamples:int) {
   use Random;
-  var randNums = makeRandomStream(0, eltType=int, parSafe=false);
+  var randNums = createRandomStream(0, eltType=int, parSafe=false);
   while numSamples > 0 {
     numSamples -= 1;
 
@@ -894,7 +895,7 @@ proc parallelInPlacePartition(start_n: int, end_n: int,
       // Update AllCounts
       forall bucketi in 0..#nBuckets {
         // (Note, forall might allow communication optimization)
-        AtomicCounts[bucketi].add(LocalCounts[bucketi], memory_order_relaxed);
+        AtomicCounts[bucketi].add(LocalCounts[bucketi], memoryOrder.relaxed);
       }
 
       // Make sure every task finishes the local classification & counting
@@ -905,7 +906,7 @@ proc parallelInPlacePartition(start_n: int, end_n: int,
       var AllCounts:[0..nBuckets] int;
       forall bucketi in 0..#nBuckets {
         // (Note, forall might allow communication optimization)
-        AllCounts[bucketi] = AtomicCounts[bucketi].read(memory_order_relaxed);
+        AllCounts[bucketi] = AtomicCounts[bucketi].read(memoryOrder.relaxed);
       }
       AllCounts[nBuckets] = 0;
 
@@ -1900,7 +1901,7 @@ proc randomtest(n:int) {
   var A: [blockDom] uint;
 
   if skew {
-    var rng = makeRandomStream(seed, eltType=uint);
+    var rng = createRandomStream(seed, eltType=uint);
     A = rng.choice([1:uint, 17:uint,
                     100:uint, 0xffff:uint, 0xffffffffffffffff:uint], n);
   } else {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -1027,7 +1027,6 @@ void expandInstallationPaths(std::vector<std::string>& args) {
 }
 
 // would just use realpath, but it is not supported on all platforms.
-static
 char* chplRealPath(const char* path)
 {
   // We would really rather use

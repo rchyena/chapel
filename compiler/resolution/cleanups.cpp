@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -59,7 +59,7 @@ static void removeUnusedFunctions() {
   std::vector<FnSymbol*> fns = getWellKnownFunctions();
 
   for_vector(FnSymbol, fn, fns) {
-    INT_ASSERT(fn->hasFlag(FLAG_GENERIC) == false);
+    INT_ASSERT(! fn->isGeneric());
 
     concreteWellKnownFunctionsSet.insert(fn);
   }
@@ -90,6 +90,21 @@ static void removeUnusedFunctions() {
           clearDefaultInitFns(fn);
 
           fn->defPoint->remove();
+        } else if (fn->isResolved() && fn->retTag == RET_TYPE) {
+          // BHARSH TODO: This is a way to work around the cleanup logic that
+          // removes generic types from the tree. If the function was left
+          // alive and returned a generic type the compiler would encounter
+          // memory corruption issues. Ideally type functions could remain
+          // in the AST and prevent the types they use from being removed.
+          //
+          // Skip if fatal errors were encountered because in such cases
+          // postFold will leave type-returning function calls in the AST.
+          Type* type = fn->retType;
+          if (type->symbol->hasFlag(FLAG_RUNTIME_TYPE_VALUE) == false &&
+              type->symbol->hasFlag(FLAG_EXTERN) == false &&
+              fatalErrorsEncountered() == false) {
+            fn->defPoint->remove();
+          }
         }
       }
     }
@@ -160,23 +175,6 @@ static void removeRandomPrimitive(CallExpr* call) {
     }
     break;
 
-    // Maybe this can be pushed into the following case, where a PRIM_MOVE gets
-    // removed if its rhs is a type symbol.  That is, resolution of a
-    // PRIM_TYPE_INIT replaces the primitive with symexpr that contains a type symbol.
-    case PRIM_TYPE_INIT:
-    {
-      // A "type init" call that is in the tree should always have a callExpr
-      // parent, as guaranteed by CallExpr::verify().
-      CallExpr* parent = toCallExpr(call->parentExpr);
-      // We expect all PRIM_TYPE_INIT primitives to have a PRIM_MOVE
-      // parent, following the insertion of call temps.
-      if (parent->isPrimitive(PRIM_MOVE))
-        parent->remove();
-      else
-        INT_FATAL(parent, "expected parent of PRIM_TYPE_EXPR to be a PRIM_MOVE");
-    }
-    break;
-
     case PRIM_MOVE:
     {
       // Remove types to enable --baseline
@@ -212,16 +210,10 @@ static void removeRandomPrimitives() {
 static void replaceTypeArgsWithFormalTypeTemps() {
   compute_call_sites();
 
-  forv_Vec(FnSymbol, fn, gFnSymbols) {
+  for_alive_in_Vec(FnSymbol, fn, gFnSymbols) {
     if (! fn->isResolved())
       // Don't bother with unresolved functions.
       // They will be removed from the tree.
-      continue;
-
-    // Skip this function if it is not in the tree.
-    if (! fn->defPoint)
-      continue;
-    if (! fn->defPoint->parentSymbol)
       continue;
 
     // We do not remove type args from extern functions so that e.g.:
@@ -299,7 +291,7 @@ static void replaceTypeArgsWithFormalTypeTemps() {
 static void removeParamArgs() {
   compute_call_sites();
 
-  forv_Vec(FnSymbol, fn, gFnSymbols)
+  for_alive_in_Vec(FnSymbol, fn, gFnSymbols)
   {
     if (! fn->isResolved())
       // Don't bother with unresolved functions.
@@ -542,7 +534,23 @@ static void removeTypedefParts() {
     if (!isPrimitiveType(def->sym->type) &&
         def->sym->hasFlag(FLAG_TYPE_VARIABLE) &&
         def->sym->type->symbol->hasFlag(FLAG_GENERIC)) {
-      def->remove();
+      bool removeIt = true;
+      if (TypeSymbol* ts = toTypeSymbol(def->sym)) {
+        if (DecoratedClassType* dt = toDecoratedClassType(ts->type)) {
+          ClassTypeDecorator d = dt->getDecorator();
+          if ((isDecoratorUnknownNilability(d) ||
+              isDecoratorUnknownManagement(d)) &&
+              dt->getCanonicalClass()->inTree()) {
+            // After resolution, can't consider it generic anymore...
+            // The generic-ness will be moot though because later
+            // it will all be replaced with the AggregateType.
+            ts->removeFlag(FLAG_GENERIC);
+            removeIt = false;
+          }
+        }
+      }
+      if (removeIt)
+        def->remove();
     }
   }
 }
@@ -622,7 +630,12 @@ static void cleanupAfterRemoves() {
       fn->addFlag(FLAG_INSTANTIATED_GENERIC);
     fn->instantiatedFrom = NULL;
     fn->setInstantiationPoint(NULL);
-    // How about fn->substitutions, basicBlocks, calledBy ?
+    form_Map(SymbolMapElem, e, fn->substitutions) {
+      if (e->value && !e->value->inTree()) {
+        e->value = NULL;
+      }
+    }
+    // How about basicBlocks, calledBy ?
   }
 
   forv_Vec(ModuleSymbol, mod, gModuleSymbols) {
@@ -639,7 +652,6 @@ static void cleanupAfterRemoves() {
     arg->instantiatedFrom = NULL;
   }
 }
-
 
 static bool isVoidOrVoidTupleType(Type* type) {
   if (type == NULL) {
@@ -766,8 +778,7 @@ static void cleanupVoidVarsAndFields() {
 
   // Remove void formal arguments from functions.
   // Change functions that return ref(void) to just return void.
-  forv_Vec(FnSymbol, fn, gFnSymbols) {
-    if (fn->defPoint->inTree()) {
+  for_alive_in_Vec(FnSymbol, fn, gFnSymbols) {
       for_formals(formal, fn) {
         if (isVoidOrVoidTupleType(formal->type)) {
           if (formal == fn->_this) {
@@ -780,12 +791,11 @@ static void cleanupVoidVarsAndFields() {
           isVoidOrVoidTupleType(fn->retType)) {
         fn->retType = dtNothing;
       }
-    }
-    if (fn->_this) {
-      if (isVoidOrVoidTupleType(fn->_this->type)) {
-        fn->_this = NULL;
+      if (fn->_this) {
+        if (isVoidOrVoidTupleType(fn->_this->type)) {
+          fn->_this = NULL;
+        }
       }
-    }
   }
 
   // Set for loop index variables that are void to the global void value
@@ -813,6 +823,10 @@ static void cleanupVoidVarsAndFields() {
             }
           }
         }
+      } else if (def->sym->type == dtUninstantiated &&
+                 isVarSymbol(def->sym) &&
+                 !def->parentSymbol->hasFlag(FLAG_REF)) {
+        def->remove();
       }
   }
 

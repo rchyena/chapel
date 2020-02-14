@@ -49,7 +49,7 @@ proc getSuperType(type t) type {
     if (t == object) then
       return t;
     else
-      return v.super.type;
+      return v!.super.type;
   }
   return st();
 }
@@ -71,8 +71,8 @@ proc nearestMutualParentClass(type car, type cdr...?k) type where k != 1 {
 }
 
 proc main {
-  var c: borrowed nearestMutualParentClass(borrowed E, borrowed D, borrowed C, borrowed C2, borrowed F) = new borrowed E();
-  var d: borrowed nearestMutualParentClass(borrowed E, borrowed D, borrowed C) = new borrowed E();
+  var c: nearestMutualParentClass(borrowed E, borrowed D, borrowed C, borrowed C2, borrowed F) = new borrowed E();
+  var d: nearestMutualParentClass(borrowed E, borrowed D, borrowed C) = new borrowed E();
   writeln(c.name);
   writeln(c.ddName());
   writeln(d.name);

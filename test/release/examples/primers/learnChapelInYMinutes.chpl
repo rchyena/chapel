@@ -29,6 +29,8 @@ writeln("World!");
 writeln("There are ", 3, " commas (\",\") in this line of code");
 
 // Different output channels:
+use IO; // Required for accessing the alternative output channels
+
 stdout.writeln("This goes to standard output, just like plain writeln() does");
 stderr.writeln("This goes to standard error");
 
@@ -441,9 +443,9 @@ for value in realArray {
 writeln(rSum, "\n", realArray);
 
 // Associative arrays (dictionaries) can be created using associative domains.
-var dictDomain: domain(string) = { "one", "two" };
-var dict: [dictDomain] int = ["one" => 1, "two" => 2];
-dict["three"] = 3; // Adds 'three' to 'dictDomain' implicitly
+var dictDomain: domain(string) = { "one", "two", "three"};
+var dict: [dictDomain] int = ["one" => 1, "two" => 2, "three" => 3];
+
 for key in dictDomain.sorted() do
   writeln(dict[key]);
 
@@ -1103,7 +1105,7 @@ proc main() {
   writeln("uranium was ", was, " but is now ", replaceWith);
 
   var isEqualTo = 235;
-  if uranium.compareExchange(isEqualTo, replaceWith) {
+  if uranium.compareAndSwap(isEqualTo, replaceWith) {
     writeln("uranium was equal to ", isEqualTo,
              " so replaced value with ", replaceWith);
   } else {

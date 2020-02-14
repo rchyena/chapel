@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -77,7 +77,6 @@ void resolveSignatureAndFunction(FnSymbol* fn) {
 ************************************** | *************************************/
 
 void resolveSignature(FnSymbol* fn) {
-  if (fn->hasFlag(FLAG_GENERIC) == false) {
     // Don't resolve formals for concrete functions
     // more often than necessary.
     static std::set<FnSymbol*> done;
@@ -87,7 +86,6 @@ void resolveSignature(FnSymbol* fn) {
 
       resolveFormals(fn);
     }
-  }
 }
 
 /************************************* | **************************************
@@ -101,8 +99,6 @@ static void updateIfRefFormal(FnSymbol* fn, ArgSymbol* formal);
 static bool needRefFormal(FnSymbol* fn, ArgSymbol* formal, bool* needRefIntent);
 
 static bool shouldUpdateAtomicFormalToRef(FnSymbol* fn, ArgSymbol* formal);
-
-static bool recordContainingCopyMutatesField(Type* at);
 
 static void handleParamCNameFormal(FnSymbol* fn, ArgSymbol* formal);
 
@@ -128,7 +124,8 @@ static void resolveFormals(FnSymbol* fn) {
     }
 
     if (formal->type->symbol->hasFlag(FLAG_REF) == false) {
-      if (formal->type                             != dtString ||
+      if ((formal->type                             != dtString &&
+           formal->type                             != dtBytes) ||
           formal->hasFlag(FLAG_INSTANTIATED_PARAM) == false) {
         updateIfRefFormal(fn, formal);
       }
@@ -149,6 +146,18 @@ static void resolveFormals(FnSymbol* fn) {
 
     if (formal->defaultExpr != NULL && fn->hasFlag(FLAG_EXPORT)) {
       storeDefaultValuesForPython(fn, formal);
+    }
+
+    // Warn for default-intent owned/shared, since these used to
+    // mean the same as `in` intent but now mean the same as `const ref`.
+    if (fWarnUnstable &&
+        formal->getModule()->modTag == MOD_USER &&
+        isManagedPtrType(formal->getValType()) &&
+        formal->originalIntent == INTENT_BLANK) {
+      USR_WARN(formal,
+               "default intent for %s has changed from `in` to `const ref`",
+               toString(formal->getValType()));
+
     }
   }
 }
@@ -341,12 +350,12 @@ static bool shouldUpdateAtomicFormalToRef(FnSymbol* fn, ArgSymbol* formal) {
          formal->hasFlag(FLAG_TYPE_VARIABLE)   == false        &&
          isAtomicType(formal->type)            == true         &&
 
-         fn->name                              != astrSequals  &&
+         fn->name                              != astrSassign  &&
 
          fn->hasFlag(FLAG_BUILD_TUPLE)         == false;
 }
 
-static bool recordContainingCopyMutatesField(Type* t) {
+bool recordContainingCopyMutatesField(Type* t) {
   AggregateType* at = toAggregateType(t);
   if (at == NULL) return false;
   if (!isRecord(at)) return false;
@@ -378,7 +387,7 @@ static void handleParamCNameFormal(FnSymbol* fn, ArgSymbol* formal) {
     USR_FATAL(fn, "extern name expression must be param");
   }
   VarSymbol* var = toVarSymbol(se->symbol());
-  if (!var->isParameter()) {
+  if (!var || !var->isParameter()) {
     USR_FATAL(fn, "extern name expression must be param");
   }
   if (var->type == dtString || var->type == dtStringC) {
@@ -466,6 +475,8 @@ void resolveFunction(FnSymbol* fn, CallExpr* forCall) {
 
     fn->addFlag(FLAG_RESOLVED);
 
+    fn->tagIfGeneric();
+
     if (strcmp(fn->name, "init") == 0 && fn->isMethod()) {
       AggregateType* at = toAggregateType(fn->_this->getValType());
       if (at->symbol->hasFlag(FLAG_GENERIC) == false) {
@@ -482,6 +493,9 @@ void resolveFunction(FnSymbol* fn, CallExpr* forCall) {
       if (fn->isIterator() == true) {
         markIterator(fn);
       }
+
+      if (needsCapture(fn))
+        convertFieldsOfRecordThis(fn);
 
       insertFormalTemps(fn);
 
@@ -506,6 +520,7 @@ void resolveFunction(FnSymbol* fn, CallExpr* forCall) {
         resolveAlsoParallelIterators(fn, forCall);
       }
     }
+    popInstantiationLimit(fn);
   }
 }
 
@@ -655,7 +670,7 @@ static void insertUnrefForArrayOrTupleReturn(FnSymbol* fn) {
 
           SET_LINENO(call);
           Expr*      rhs       = call->get(2)->remove();
-          VarSymbol* tmp       = newTemp(arrayUnrefName, rhsType);
+          VarSymbol* tmp       = newTemp("array_unref_ret_tmp", rhsType);
           CallExpr*  initTmp   = new CallExpr(PRIM_MOVE,     tmp, rhs);
           CallExpr*  unrefCall = new CallExpr("chpl__unref", tmp);
           CallExpr*  shapeSet  = findSetShape(call, ret);
@@ -1002,7 +1017,7 @@ void resolveIfExprType(CondStmt* stmt) {
       BlockStmt* refBranch = isReferenceType(thenType) ? stmt->thenStmt : stmt->elseStmt;
       CallExpr* call = toCallExpr(refBranch->body.tail);
       SymExpr* rhs = toSymExpr(call->get(2));
-      if (isUserDefinedRecord(rhs->getValType())) {
+      if (typeNeedsCopyInitDeinit(rhs->getValType())) {
         CallExpr* copy = new CallExpr("chpl__autoCopy", rhs->remove());
         call->insertAtTail(copy);
         resolveCallAndCallee(copy);
@@ -1177,11 +1192,6 @@ void resolveReturnTypeAndYieldedType(FnSymbol* fn, Type** yieldedType) {
 
     fn->retType = retType;
 
-    if (retType->symbol->hasFlag(FLAG_GENERIC) &&
-        fn->retTag == RET_TYPE) {
-      USR_FATAL_CONT(fn, "returning a generic type variable is not supported");
-    }
-
   } else {
 
     // Update the yielded type argument if it was requested
@@ -1292,9 +1302,10 @@ void insertFormalTemps(FnSymbol* fn) {
 
       VarSymbol* tmp = newTemp(astr("_formal_tmp_", formal->name));
 
-      if (formal->hasFlag(FLAG_CONST_DUE_TO_TASK_FORALL_INTENT)) {
+      if (formal->hasFlag(FLAG_CONST_DUE_TO_TASK_FORALL_INTENT))
         tmp->addFlag(FLAG_CONST_DUE_TO_TASK_FORALL_INTENT);
-      }
+      if (formal->hasFlag(FLAG_NO_AUTO_DESTROY))
+        tmp->addFlag(FLAG_NO_AUTO_DESTROY);
 
       formals2vars.put(formal, tmp);
     }
@@ -1335,7 +1346,13 @@ bool formalRequiresTemp(ArgSymbol* formal, FnSymbol* fn) {
 }
 
 bool shouldAddFormalTempAtCallSite(ArgSymbol* formal, FnSymbol* fn) {
-  if (isRecord(formal->getValType())) {
+
+  // Don't add copies at call site if function body will be removed anyway.
+  // TODO: handle RET_TYPE but not for runtime types
+  if (fn && fn->retTag == RET_PARAM)
+    return false;
+
+  if (isRecord(formal->getValType()) || isUnion(formal->getValType())) {
     if (formal->intent == INTENT_IN ||
         formal->intent == INTENT_CONST_IN ||
         formal->originalIntent == INTENT_IN ||
@@ -1653,6 +1670,7 @@ static void insertCasts(BaseAST* ast, FnSymbol* fn, Vec<CallExpr*>& casts) {
             bool typesDiffer = (rhsType          != lhsType &&
                                 rhsType->refType != lhsType &&
                                 rhsType          != lhsType->refType);
+            bool isTypeOf = rhsCall && rhsCall->isPrimitive(PRIM_TYPEOF);
 
             SET_LINENO(rhs);
 
@@ -1741,6 +1759,11 @@ static void insertCasts(BaseAST* ast, FnSymbol* fn, Vec<CallExpr*>& casts) {
                 // In the future, it would be nice if this could no-init
                 // a LHS array and then move records into it from the RHS.
 
+                // Tell compiler it shouldn't raise errors connected
+                // to default-initializing to since it is actually
+                // set below.
+                to->addFlag(FLAG_INITIALIZED_LATER);
+
                 CallExpr* init = new CallExpr(PRIM_DEFAULT_INIT_VAR,
                                               to, fromType);
                 call->insertBefore(init);
@@ -1798,7 +1821,7 @@ static void insertCasts(BaseAST* ast, FnSymbol* fn, Vec<CallExpr*>& casts) {
                 casts.add(cast);
               }
 
-            } else {
+            } else if (!isTypeOf) {
               // handle adding casts for a regular PRIM_MOVE
 
               if (typesDiffer) {

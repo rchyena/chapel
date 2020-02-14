@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -43,9 +43,12 @@
 
 #include "ResolveScope.h"
 
+#include "DecoratedClassType.h"
 #include "ForallStmt.h"
 #include "LoopExpr.h"
 #include "scopeResolve.h"
+
+ResolveScope* rootScope;
 
 static std::map<BaseAST*, ResolveScope*> sScopeMap;
 
@@ -175,9 +178,10 @@ void ResolveScope::addBuiltIns() {
   extend(gNil);
 
   extend(gNoInit);
+  extend(gSplitInit);
 
   extend(dtUnknown->symbol);
-  extend(dtValue->symbol);
+  extend(dtAnyRecord->symbol);
 
   extend(gUnknown);
   extend(gNone);
@@ -231,6 +235,7 @@ void ResolveScope::addBuiltIns() {
   extend(dtAnyEnumerated->symbol);
   extend(dtAnyImag->symbol);
   extend(dtAnyReal->symbol);
+  extend(dtAnyPOD->symbol);
 
   extend(dtIntegral->symbol);
   extend(dtNumeric->symbol);
@@ -243,6 +248,9 @@ void ResolveScope::addBuiltIns() {
   extend(dtUnmanaged->symbol);
   extend(dtUnmanagedNonNilable->symbol);
   extend(dtUnmanagedNilable->symbol);
+  extend(dtAnyManagementAnyNilable->symbol);
+  extend(dtAnyManagementNonNilable->symbol);
+  extend(dtAnyManagementNilable->symbol);
 
   extend(dtMethodToken->symbol);
   extend(gMethodToken);
@@ -256,7 +264,6 @@ void ResolveScope::addBuiltIns() {
   extend(gBoundsChecking);
   extend(gCastChecking);
   extend(gNilChecking);
-  extend(gLegacyNilClasses);
   extend(gOverloadSetsChecks);
   extend(gDivZeroChecking);
   extend(gPrivatization);
@@ -356,11 +363,20 @@ ModuleSymbol* ResolveScope::enclosingModule() const {
 *                                                                             *
 ************************************** | *************************************/
 
-bool ResolveScope::extend(Symbol* newSym) {
+bool ResolveScope::extend(Symbol* newSym, bool isTopLevel) {
   const char* name   = newSym->name;
   bool        retval = false;
 
-  if (Symbol* oldSym = lookupNameLocally(name)) {
+  // If this is a top-level module, we look up the symbol's name as
+  // though we were resolving a 'use' in order to take module symbols
+  // (not visible through normal lexical scoping) into consideration.
+  // Without this, we no longer get duplicate symbol definition
+  // warnings when two top-level modules share the same name and a
+  // subsequent lookup of that module name picks the first module it
+  // finds (since we don't have a concept of overloading for modules
+  // or most symbol types other than functions.
+  //
+  if (Symbol* oldSym = lookupNameLocally(name, isTopLevel)) {
     FnSymbol* oldFn = toFnSymbol(oldSym);
     FnSymbol* newFn = toFnSymbol(newSym);
 
@@ -442,17 +458,17 @@ bool ResolveScope::isSymbolAndMethod(Symbol* sym0, Symbol* sym1) {
 *                                                                             *
 ************************************** | *************************************/
 
-Symbol* ResolveScope::lookup(Expr* expr) const {
+Symbol* ResolveScope::lookup(Expr* expr, bool isUse) const {
   Symbol* retval = NULL;
 
   // A lexical lookup from the current scope
   if (UnresolvedSymExpr* uSym = toUnresolvedSymExpr(expr)) {
-    retval = lookup(uSym);
+    retval = lookup(uSym, isUse);
 
   // A dotted reference (<object>.<field>) to a field in an object
   } else if (CallExpr* call = toCallExpr(expr)) {
     if (call->isNamedAstr(astrSdot) == true) {
-      retval = getFieldFromPath(call);
+      retval = getFieldFromPath(call, isUse);
 
     } else {
       INT_FATAL(expr, "Not a dotted expr");
@@ -471,20 +487,20 @@ Symbol* ResolveScope::lookup(Expr* expr) const {
 *                                                                             *
 ************************************** | *************************************/
 
-Symbol* ResolveScope::lookup(UnresolvedSymExpr* usymExpr) const {
+Symbol* ResolveScope::lookup(UnresolvedSymExpr* usymExpr, bool isUse) const {
   const ResolveScope* ptr    = NULL;
   Symbol*             retval = NULL;
 
   for (ptr = this; ptr != NULL && retval == NULL; ptr = ptr->mParent) {
-    retval = ptr->lookupWithUses(usymExpr);
+    retval = ptr->lookupWithUses(usymExpr, isUse);
   }
 
   return retval;
 }
 
-Symbol* ResolveScope::lookupWithUses(UnresolvedSymExpr* usymExpr) const {
+Symbol* ResolveScope::lookupWithUses(UnresolvedSymExpr* usymExpr, bool isUse) const {
   const char* name   = usymExpr->unresolved;
-  Symbol*     retval = lookupNameLocally(name);
+  Symbol*     retval = lookupNameLocally(name, isUse);
 
   if (retval == NULL && mUseList.size() > 0) {
     UseList useList = mUseList;
@@ -504,7 +520,7 @@ Symbol* ResolveScope::lookupWithUses(UnresolvedSymExpr* usymExpr) const {
           }
 
           if (ResolveScope* next = getScopeFor(scopeToUse)) {
-            if (Symbol* sym = next->lookupNameLocally(nameToUse)) {
+            if (Symbol* sym = next->lookupNameLocally(nameToUse, isUse)) {
               if (isRepeat(sym, symbols) == false) {
                 if (FnSymbol* fn = toFnSymbol(sym)) {
                   if (fn->isMethod() == false) {
@@ -557,11 +573,11 @@ bool ResolveScope::isRepeat(Symbol* toAdd, const SymList& symbols) const {
 *                                                                             *
 ************************************** | *************************************/
 
-Symbol* ResolveScope::getFieldFromPath(CallExpr* dottedExpr) const {
+Symbol* ResolveScope::getFieldFromPath(CallExpr* dottedExpr, bool isUse) const {
   Expr*   lhsExpr = dottedExpr->get(1);
   Symbol* retval  = NULL;
 
-  if (Symbol* symbol = lookup(lhsExpr)) {
+  if (Symbol* symbol = lookup(lhsExpr, isUse)) {
     if (ModuleSymbol* module = toModuleSymbol(symbol)) {
       if (SymExpr* rhs = toSymExpr(dottedExpr->get(2))) {
         const char* rhsName = NULL;
@@ -631,12 +647,17 @@ Symbol* ResolveScope::getFieldLocally(const char* fieldName) const {
 ************************************** | *************************************/
 
 // 2017/06/02 Used by scopeResolve.
-Symbol* ResolveScope::lookupNameLocally(const char* name) const {
+Symbol* ResolveScope::lookupNameLocally(const char* name, bool isUse) const {
   Bindings::const_iterator it     = mBindings.find(name);
   Symbol*                  retval = NULL;
 
   if (it != mBindings.end()) {
-    retval = it->second;
+    Symbol* sym = it->second;
+
+    // don't consider top-level modules to be visible unless this is a use
+    if (toModuleSymbol(sym) == NULL || this != rootScope || isUse) {
+      retval = sym;
+    }
   }
 
   return retval;

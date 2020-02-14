@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -83,6 +83,9 @@ module Crypto {
   use C_OpenSSL;
   use SysError;
 
+  private use IO;
+  private use SysCTypes;
+
   pragma "no doc"
   proc generateKeys(bits: int) {
    var localKeyPair: EVP_PKEY_PTR;
@@ -124,7 +127,7 @@ module Crypto {
     */
     proc init(s: string) {
       this.complete();
-      this._len = s.length;
+      this._len = s.numBytes;
       if (this._len == 0) {
         halt("Enter a string with length greater than 0 in order to create a buffer");
       }
@@ -920,7 +923,7 @@ proc bfEncrypt(plaintext: CryptoBuffer, key: CryptoBuffer, IV: CryptoBuffer, cip
     var key: [0..#byteLen] uint(8);
     var salt = saltBuff.getBuffData();
     var saltLen = saltBuff.getBuffSize();
-    var userKeyLen = userKey.length;
+    var userKeyLen = userKey.numBytes;
 
     var md: CONST_EVP_MD_PTR;
     md = EVP_get_digestbyname(digestName.c_str());

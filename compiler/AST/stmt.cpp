@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -452,7 +452,7 @@ BlockStmt::length() const {
 
 void
 BlockStmt::useListAdd(ModuleSymbol* mod, bool privateUse) {
-  useListAdd(new UseStmt(mod, privateUse));
+  useListAdd(new UseStmt(mod, "", privateUse));
 }
 
 void
@@ -538,12 +538,14 @@ BlockStmt::accept(AstVisitor* visitor) {
 *                                                                             *
 ************************************** | *************************************/
 
-CondStmt::CondStmt(Expr* iCondExpr, BaseAST* iThenStmt, BaseAST* iElseStmt) :
-  Stmt(E_CondStmt) {
+CondStmt::CondStmt(Expr* iCondExpr,
+                   BaseAST* iThenStmt, BaseAST* iElseStmt,
+                   bool isIfExpr) : Stmt(E_CondStmt) {
 
   condExpr = iCondExpr;
   thenStmt = NULL;
   elseStmt = NULL;
+  fIsIfExpr = isIfExpr;
 
   if (Expr* s = toExpr(iThenStmt)) {
     BlockStmt* bs = toBlockStmt(s);
@@ -576,7 +578,32 @@ CondStmt::CondStmt(Expr* iCondExpr, BaseAST* iThenStmt, BaseAST* iElseStmt) :
   gCondStmts.add(this);
 }
 
-CallExpr* CondStmt::foldConstantCondition() {
+static void fixIfExprFoldedBlock(Expr* stmt) {
+  if (BlockStmt* block = toBlockStmt(stmt)) {
+    // This addresses lifetime issues with variables created within if-exprs.
+    block->flattenAndRemove();
+  }
+}
+
+static void addCondMentionsToEndOfStatement(CondStmt* cond, bool isIfExpr) {
+  CallExpr* end = NULL;
+
+  if (isIfExpr) {
+    // Find the next PRIM_END_OF_STATEMENT
+    for (Expr* cur = cond; cur != NULL; cur = cur->next) {
+      if (CallExpr* call = toCallExpr(cur)) {
+        if (call->isPrimitive(PRIM_END_OF_STATEMENT)) {
+          end = call;
+          break;
+        }
+      }
+    }
+  }
+
+  addMentionToEndOfStatement(cond, end);
+}
+
+CallExpr* CondStmt::foldConstantCondition(bool addEndOfStatement) {
   CallExpr* result = NULL;
 
   if (SymExpr* cond = toSymExpr(condExpr)) {
@@ -589,6 +616,7 @@ CallExpr* CondStmt::foldConstantCondition() {
 
         insertBefore(result);
 
+        bool ifExpr = isIfExpr();
         // A squashed IfExpr's result does not need FLAG_IF_EXPR_RESULT, which
         // is only used when there are multiple paths that could return a
         // different type.
@@ -597,24 +625,28 @@ CallExpr* CondStmt::foldConstantCondition() {
             Symbol* LHS = toSymExpr(call->get(1))->symbol();
             if (LHS->hasFlag(FLAG_IF_EXPR_RESULT)) {
               LHS->removeFlag(FLAG_IF_EXPR_RESULT);
+              ifExpr = true;
             }
           }
         }
+
+        if (addEndOfStatement)
+          addCondMentionsToEndOfStatement(this, ifExpr);
 
         if (var->immediate->bool_value() == gTrue->immediate->bool_value()) {
           Expr* then_stmt = thenStmt;
 
           then_stmt->remove();
-
           replace(then_stmt);
+          if (ifExpr) fixIfExprFoldedBlock(then_stmt);
 
         } else {
           Expr* else_stmt = elseStmt;
 
           if (else_stmt != NULL) {
             else_stmt->remove();
-
             replace(else_stmt);
+            if (ifExpr) fixIfExprFoldedBlock(else_stmt);
           } else {
             remove();
           }
@@ -624,6 +656,10 @@ CallExpr* CondStmt::foldConstantCondition() {
   }
 
   return result;
+}
+
+bool CondStmt::isIfExpr() const {
+  return fIsIfExpr;
 }
 
 void CondStmt::verify() {
@@ -675,7 +711,8 @@ void CondStmt::verify() {
 CondStmt* CondStmt::copyInner(SymbolMap* map) {
   return new CondStmt(COPY_INT(condExpr),
                       COPY_INT(thenStmt),
-                      COPY_INT(elseStmt));
+                      COPY_INT(elseStmt),
+                      fIsIfExpr);
 }
 
 
@@ -843,7 +880,14 @@ void GotoStmt::verify() {
       }
 
       if (se->symbol()->defPoint->parentSymbol != this->parentSymbol)
+      {
+       if (isShadowVarSymbol(this->parentSymbol)        &&
+           (se->symbol()->defPoint->parentSymbol ==
+            this->parentSymbol->defPoint->parentSymbol) )
+        ; // this goto is in a ShadowVarSymbol::initBlock() - ok
+       else
         INT_FATAL(this, "goto label is in a different function than the goto");
+      }
 
       GotoStmt* igs = getGotoLabelsIterResumeGoto(this);
 

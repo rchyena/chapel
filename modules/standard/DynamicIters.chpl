@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -27,6 +27,8 @@
   Address Space Programming Models*, October 2011.
 */
 module DynamicIters {
+
+  private use ChapelLocks;
 
 /*
    Toggle debugging output.
@@ -691,7 +693,7 @@ private proc defaultNumTasks(nTasks:int)
       dnTasks = dataParTasksPerLocale;
 
     if nTasks < 0 then
-      warning("'numTasks' < 0, defaulting to numTasks=" + dnTasks);
+      warning("'numTasks' < 0, defaulting to numTasks=", dnTasks);
   }
   return dnTasks;
 }

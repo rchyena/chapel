@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2019 Cray Inc.
+ * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  * 
  * The entirety of this work is licensed under the Apache License,
@@ -1388,6 +1388,7 @@ qioerr qio_channel_revert(const int threadsafe, qio_channel_t* ch)
   return 0;
 }
 
+qioerr qio_channel_seek(qio_channel_t* ch, int64_t start, int64_t end);
 
 void qio_channel_commit_unlocked(qio_channel_t* ch);
 
