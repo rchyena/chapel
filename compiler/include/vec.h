@@ -1,5 +1,6 @@
 /*
- * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
+ * Copyright 2020 Hewlett Packard Enterprise Development LP
+ * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  * 
  * The entirety of this work is licensed under the Apache License,
@@ -313,7 +314,7 @@ Vec<C,S>::move_internal(Vec<C,S> &vv)  {
   i = vv.i;
   v = vv.v;
   if (vv.v == &vv.e[0]) { 
-    memcpy(e, &vv.e[0], sizeof(e));
+    memcpy((void*)e, &vv.e[0], sizeof(e));
     v = e;
   } else
     vv.v = 0;
@@ -330,7 +331,7 @@ Vec<C,S>::copy(const Vec<C,S> &vv)  {
   n = vv.n;
   i = vv.i;
   if (vv.v == &vv.e[0]) { 
-    memcpy(e, &vv.e[0], sizeof(e));
+    memcpy((void*)e, &vv.e[0], sizeof(e));
     v = e;
   } else {
     if (vv.v) 

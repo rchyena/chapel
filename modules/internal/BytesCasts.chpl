@@ -1,5 +1,6 @@
 /*
- * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
+ * Copyright 2020 Hewlett Packard Enterprise Development LP
+ * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -45,7 +46,7 @@ module BytesCasts {
       return false;
     } else {
       throw new owned IllegalArgumentError("bad cast from bytes '" +
-                                           x.decode(decodePolicy.ignore) +
+                                           x.decode(decodePolicy.drop) +
                                            "' to bool");
     }
     return false;
@@ -113,7 +114,7 @@ module BytesCasts {
     var isErr: bool;
     // localize the bytes and remove leading and trailing whitespace
     var localX = x.localize();
-    const hasUnderscores = localX.find(b"_") != 0;
+    const hasUnderscores = localX.find(b"_") != -1;
 
     if hasUnderscores {
       localX = localX.strip();
@@ -125,12 +126,12 @@ module BytesCasts {
       }
       if numElements > 1 then
         throw new owned IllegalArgumentError("bad cast from bytes '" + 
-                                             x.decode(decodePolicy.ignore) +
+                                             x.decode(decodePolicy.drop) +
                                              "' to " + t:string);
 
       // remove underscores everywhere but the first position
-      if localX.length >= 2 then
-        localX = localX[1] + localX[2..].replace(b"_", b"");
+      if localX.size >= 2 then
+        localX = localX.item(0) + localX[1..].replace(b"_", b"");
     }
 
     if localX.isEmpty() then
@@ -159,7 +160,7 @@ module BytesCasts {
 
     if isErr then
       throw new owned IllegalArgumentError("bad cast from bytes '" +
-                                           x.decode(decodePolicy.ignore) +
+                                           x.decode(decodePolicy.drop) +
                                            "' to " + t:string);
 
     return retVal;
@@ -198,17 +199,17 @@ module BytesCasts {
   }
 
   inline proc _cleanupBytesForRealCast(type t, ref s: bytes) throws {
-    var len = s.length;
+    var len = s.size;
 
     if s.isEmpty() then
       throw new owned IllegalArgumentError("bad cast from empty bytes to " +
                                            t: string);
 
-    if len >= 2 && s[2..].find(b"_") != 0 {
+    if len >= 2 && s[1..].find(b"_") != -1 {
       // Don't remove a leading underscore in the string number,
       // but remove the rest.
-      if len > 2 && s[1] == b"_" {
-        s = s[1] + s[2..].replace(b"_", b"");
+      if len > 2 && s.item(1) == b"_" {
+        s = s.item(0) + s[1..].replace(b"_", b"");
       } else {
         s = s.replace(b"_", b"");
       }
@@ -238,7 +239,7 @@ module BytesCasts {
 
     if isErr then
       throw new owned IllegalArgumentError("bad cast from bytes '" +
-                                           x.decode(decodePolicy.ignore) +
+                                           x.decode(decodePolicy.drop) +
                                            "' to real(" + numBits(t):string + ")");
 
     return retVal;
@@ -267,7 +268,7 @@ module BytesCasts {
 
     if isErr then
       throw new owned IllegalArgumentError("bad cast from bytes '" +
-                                           x.decode(decodePolicy.ignore) +
+                                           x.decode(decodePolicy.drop) +
                                            "' to imag(" + numBits(t):string + ")");
 
     return retVal;
@@ -325,7 +326,7 @@ module BytesCasts {
 
     if isErr then
       throw new owned IllegalArgumentError("bad cast from bytes '" +
-                                           x.decode(decodePolicy.ignore) +
+                                           x.decode(decodePolicy.drop) +
                                            "' to complex(" + numBits(t):string + ")");
 
     return retVal;

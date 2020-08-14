@@ -1,5 +1,6 @@
 /*
- * Copyright 2004-2020 Hewlett Packard Enterprise Development LP
+ * Copyright 2020 Hewlett Packard Enterprise Development LP
+ * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  * 
  * The entirety of this work is licensed under the Apache License,
@@ -66,7 +67,7 @@ record LinkedList {
   /*
     The number of nodes in the list.
    */
-  var length: int;
+  var size: int;
 
   pragma "no doc"
   proc init(type eltType, first : unmanaged listNode(eltType)? = nil, last : unmanaged listNode(eltType)? = nil) {
@@ -84,10 +85,12 @@ record LinkedList {
   }
 
   /*
-     Synonym for length.
+    Deprecated - please use :proc:`LinkedList.size`.
    */
-  proc size {
-    return length;
+  proc length ref {
+    compilerWarning("'LinkedList.length' is deprecated - " +
+                    "please use 'LinkedList.size' instead");
+    return size;
   }
 
   /*
@@ -114,7 +117,7 @@ record LinkedList {
       first = new unmanaged listNode(eltType, e);
       last = first;
     }
-    length += 1;
+    size += 1;
   }
   /*
      Synonym for append.
@@ -126,10 +129,10 @@ record LinkedList {
   /*
     Append all of the supplied arguments to the list.
    */
-  //TODO: merge the append overloads
   proc append(e: eltType, es: eltType ...?k) {
+    //TODO: merge the append overloads
     append(e);
-    for param i in 1..k do
+    for param i in 0..k-1 do
       append(es(i));
   }
 
@@ -140,7 +143,7 @@ record LinkedList {
     first = new unmanaged listNode(eltType, e, first);
     if last == nil then
       last = first;
-    length += 1;
+    size += 1;
   }
 
   /*
@@ -178,7 +181,7 @@ record LinkedList {
       if last == tmp then
         last = prev;
       delete tmp;
-      length -= 1;
+      size -= 1;
     }
   }
 
@@ -187,8 +190,8 @@ record LinkedList {
      It is an error to call this function on an empty list.
    */
    proc pop_front():eltType {
-     use HaltWrappers only;
-     if boundsChecking && length < 1 {
+     import HaltWrappers;
+     if boundsChecking && size < 1 {
        HaltWrappers.boundsCheckHalt("pop_front on empty list");
      }
      var oldfirst = first!;
@@ -196,7 +199,7 @@ record LinkedList {
      var ret = oldfirst.data;
      first = newfirst;
      if last == oldfirst then last = newfirst;
-     length -= 1;
+     size -= 1;
      delete oldfirst;
      return ret;
    }
@@ -213,7 +216,7 @@ record LinkedList {
     }
     first = nil;
     last = nil;
-    length = 0;
+    size = 0;
   }
 
   /*
@@ -234,7 +237,7 @@ record LinkedList {
 
     if binary {
       // Write the number of elements.
-      f <~> length;
+      f <~> size;
     }
     if isjson || ischpl {
       f <~> new ioLiteral("[");
@@ -262,7 +265,7 @@ record LinkedList {
 
     //
     // Special handling for reading in order to handle reading an arbitrary
-    // length.
+    // size.
     //
     const isBinary = f.binary();
     const arrayStyle = f.styleElement(QIO_STYLE_ELEMENT_ARRAY);
@@ -338,10 +341,10 @@ record LinkedList {
   :type x: `T`
   :rtype: LinkedList(T)
  */
-// TODO: could just be an initializer?
 proc makeList(x ...?k) {
-  var s: LinkedList(x(1).type);
-  for param i in 1..k do
+  // TODO: could just be an initializer?
+  var s: LinkedList(x(0).type);
+  for param i in 0..k-1 do
     s.append(x(i));
   return s;
 }
